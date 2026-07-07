@@ -15,12 +15,30 @@ Air Changes per Hour (ACH) values are defined in the `ACH_BY_ENVIRONMENT` consta
 | Environment Key | ACH (Air Changes/Hour) | Use Case |
 |----------------|----------------------|----------|
 | `heavy_plant` | 45 | Heavy manufacturing / foundry |
-| `fundicion` | 45 | Casting/smelting |
+| `fundicion` | 45 | Casting/smelting (alias) |
 | `mecanico` | 20 | Machine shop |
 | `alimentos` | 15 | Food processing |
 | `data_center` | 30 | Data center |
+| `datacenter` | 30 | Data center (alias) |
 | `warehouse` | 8 | Warehouse / storage |
+| `almacen` | 8 | Warehouse / storage (alias) |
 | `default` | 10 | General industrial |
+
+## Criticality by Environment
+
+Each environment is assigned a criticality rating defined in `CRITICALITY_BY_ENVIRONMENT`, based on thermal and hygrometric load:
+
+| Environment Key | Criticality |
+|----------------|-------------|
+| `heavy_plant` | `"ALTA"` |
+| `fundicion` | `"ALTA"` |
+| `mecanico` | `"MEDIA"` |
+| `alimentos` | `"BAJA"` |
+| `data_center` | `"ALTA"` |
+| `datacenter` | `"ALTA"` |
+| `warehouse` | `"BAJA"` |
+| `almacen` | `"BAJA"` |
+| `default` | `"BAJA"` |
 
 ## Exported Functions
 
@@ -50,6 +68,16 @@ generateEngineeringReport(
 ```
 
 Full pre-engineering report. Computes all physical properties of the ventilation system including airflow, power, noise, equipment count, distribution layout, and investment range.
+
+**`AreaDimensions` interface:**
+
+```typescript
+interface AreaDimensions {
+  length: number; // in metres
+  width: number;  // in metres
+  height: number; // in metres
+}
+```
 
 **`DetailedEngineeringReport` interface:**
 
@@ -97,6 +125,12 @@ getAchForEnvironment(environment: string): number
 ```
 
 Returns the ACH value for the given environment key from `ACH_BY_ENVIRONMENT`. Defaults to `10` for unknown or unrecognised environment strings.
+
+## Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `METERS_TO_FEET_FACTOR` | `35.3147` | Cubic metres to cubic feet conversion factor (1 m³ = 35.3147 ft³) |
 
 ## Input Validation
 

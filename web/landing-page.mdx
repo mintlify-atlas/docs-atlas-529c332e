@@ -34,7 +34,7 @@ The landing page is composed of a fixed sequence of marketing sections defined i
 
 ## White-label branding
 
-Tenant branding is resolved server-side via `getPublicBranding(tenantCode?)` from `src/web/actions/branding.ts`, which delegates to `getTenantBranding()`. This function reads all `tenant_settings` rows where `is_public = true` — covering the `EMPRESA`, `IDENTIDAD`, `LOCALIZACION`, and `DOCUMENTOS` modules — and merges them over hard-coded defaults from `getBrandingDefaults()`.
+Tenant branding is resolved server-side via `getPublicBranding(tenantCode?)` from `src/web/actions/branding.ts`, which delegates to `getTenantBranding()`. This function reads all `tenant_settings` rows for the modules `EMPRESA`, `IDENTIDAD`, `LOCALIZACION`, and `DOCUMENTOS` and merges them over hard-coded defaults from `getBrandingDefaults()`.
 
 The resolved `BrandingConfig` object is passed directly into the root layout, making the following fields available to every page component without additional fetches:
 
@@ -75,10 +75,10 @@ The floating CTA (`FloatingCta`) links directly to `/wizard`, routing the user i
 ```
 Browser
   └── Landing Page (SSR, src/app/page.tsx)
-        ├── getPublicBranding()   → tenant_settings (is_public = true)
+        ├── getPublicBranding()   → tenant_settings (modules: EMPRESA, IDENTIDAD, LOCALIZACION, DOCUMENTOS)
         ├── LandingCfmCalculator  → calculateRequiredCfm() [client-side]
         └── Contact Form
-              └── submitContactForm() [Server Action]
+              └── submitContactForm() [Server Action, src/web/actions/leads.ts]
                     ├── contactFormSchema (Zod)
                     ├── sanitizeObject()
                     ├── checkRateLimit()

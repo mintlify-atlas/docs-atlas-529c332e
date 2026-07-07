@@ -1,10 +1,10 @@
 ---
 title: "Rate Limiter: In-process Request Throttling for Server Actions"
 sidebarTitle: "Rate Limiter"
-description: "How checkRateLimit works in ERP B2B Premium — in-process sliding window rate limiting for Server Actions with configurable identifier, limit, and window."
+description: "How checkRateLimit works in ERP B2B Premium — in-process Map-based rate limiting for Server Actions with configurable identifier, limit, and window."
 ---
 
-`checkRateLimit` (`src/lib/utils/rate-limiter.ts`) provides lightweight in-process rate limiting for Server Actions. It uses an in-memory `Map` with a sliding window to track request counts per identifier. It is used in the wizard to prevent form submission abuse.
+`checkRateLimit` (`src/lib/utils/rate-limiter.ts`) provides lightweight in-process rate limiting for Server Actions. It uses an in-memory `Map` to track request counts per identifier with a configurable time window. It is used in the wizard to prevent form submission abuse.
 
 <Warning>
   This is an **in-process** rate limiter. In serverless deployments (Vercel), each function instance has its own isolated Map, so the effective rate limit is per-instance, not globally enforced. For global rate limiting, use an edge middleware solution (e.g., Upstash Redis).
@@ -62,6 +62,6 @@ On each call to `checkRateLimit`:
 
 1. **Window expired** — if no entry exists for the identifier, or if `Date.now() > entry.resetAt`, the entry is reset to `{ count: 1, resetAt: now + windowMs }` and the request is allowed.
 2. **Limit reached** — if `entry.count >= maxRequests`, returns `{ allowed: false, remaining: 0 }` without incrementing the counter.
-3. **Within window** — if the entry is active and below the limit, `count` is incremented and `{ allowed: true, remaining: maxRequests - count }` is returned.
+3. **Within window** — if the entry is active and below the limit, `count` is incremented and `{ allowed: true, remaining: maxRequests - entry.count }` is returned.
 
 Because the window resets only on the first request after expiry (not on a fixed schedule), the implementation behaves as a **sliding reset** rather than a strict fixed-window counter.

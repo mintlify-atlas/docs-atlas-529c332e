@@ -1,7 +1,7 @@
 ---
 title: "Quotes and Requirements: Pre-sales Pipeline Management"
 sidebarTitle: "Quotes & Requirements"
-description: "Create and manage technical requirements and commercial quotes in ERP B2B Premium, tracking them from draft through approval."
+description: "Create and manage technical requirements and commercial quotes in ERP B2B Premium, tracking each record from BORRADOR through approval or cancellation."
 ---
 
 Requirements capture the technical scope of client needs. Quotes translate requirements into commercial proposals. Together they form the pre-sales pipeline between lead capture and job execution. Linking a quote to a requirement via `requirement_id` establishes full traceability: lead → requirement → quote → job → invoice.
@@ -31,6 +31,7 @@ interface RequirementRow {
   sales_user_id: string | null;
   created_at: string;
   client: { legal_name: string; city: string | null } | null;
+  engineering_user?: { first_name: string; last_name: string } | null;
 }
 ```
 

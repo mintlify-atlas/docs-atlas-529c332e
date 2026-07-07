@@ -1,7 +1,7 @@
 ---
 title: "ERP B2B Premium Architecture: Bounded Contexts and Data Flow"
 sidebarTitle: "Overview"
-description: "How ERP B2B Premium structures its codebase into bounded contexts, how the middleware routes requests, and how public and ERP layers interact."
+description: "How ERP B2B Premium structures its codebase into bounded contexts, how the Next.js middleware routes requests, and how public and ERP layers interact."
 ---
 
 ERP B2B Premium is divided into two bounded contexts: the **public web layer** (`src/web/`) handles marketing, lead generation, and the wizard funnel — all of which are accessible without authentication. The **authenticated ERP layer** (`src/erp/`) contains the dashboard, CRM, inventory, billing, and operations modules, accessible only to verified tenant users. Both contexts share a common **platform layer** (`src/platform/`) that owns auth client factories, tenant resolution, and the middleware dispatcher.

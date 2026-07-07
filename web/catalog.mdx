@@ -4,7 +4,7 @@ sidebarTitle: "Product Catalog"
 description: "How the public industrial catalog is structured, how to query it, and how to manage products, categories, and media assets in ERP B2B Premium."
 ---
 
-The industrial product catalog is publicly accessible (anonymous RLS read access) and organized in a five-level hierarchy. Products carry technical specifications stored as key-value pairs, plus separate collections for images, downloadable documents, CAD files, and SEO metadata. The entire hierarchy is resolved in **two database queries** and cached at the Next.js layer for 60 seconds.
+The industrial product catalog is publicly accessible and organized in a five-level hierarchy. Products carry technical specifications stored as key-value pairs, plus separate collections for images, downloadable documents, CAD files, and SEO metadata. The entire hierarchy is resolved in **two database queries** and cached at the Next.js layer for 60 seconds.
 
 ## Category hierarchy
 
@@ -185,18 +185,16 @@ addProductImage(
 
 `addProductImage` inserts a row into `media_assets` and a corresponding row into `product_images` with a default `sort_order` of `10`. Upload the binary to Supabase Storage first, then call this action to register and link the asset.
 
-## Public access and RLS
+## Public access
 
-The catalog is designed for anonymous read access. Unauthenticated users can browse the full product hierarchy without authentication.
+The catalog read path uses `supabaseAdmin` (service-role key), which bypasses RLS. Tenant isolation is enforced at the query level via `.eq("tenant_id", tenantId)` — only records belonging to the requested tenant are returned. All write operations use authenticated admin requests and require the `items.manage` permission.
 
 ```
 Anonymous user → getIndustrialCatalog() → supabaseAdmin (read)
                                             ↑
-                           RLS: SELECT allowed for all, no tenant filter needed
-                           (catalog is scoped by tenantId in the query itself)
+                           Tenant isolation: .eq("tenant_id", tenantId)
+                           (scoped in query; supabaseAdmin bypasses RLS)
 ```
-
-Any attempt to `INSERT`, `UPDATE`, or `DELETE` from an anonymous context will be rejected by the RLS policies configured on `products`, `product_categories`, and related tables.
 
 ## Soft-delete behavior
 

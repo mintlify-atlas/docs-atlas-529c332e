@@ -27,6 +27,20 @@ logger.warn("Tenant not found, using default", { module: "tenant-resolver" });
 logger.error("Invoice creation failed", { error: new Error("RLS violation") });
 ```
 
+The returned logger object has the following type:
+
+```typescript
+type Logger = {
+  debug: (message: string, opts?: Partial<LogEntry>) => void;
+  info:  (message: string, opts?: Partial<LogEntry>) => void;
+  warn:  (message: string, opts?: Partial<LogEntry>) => void;
+  error: (message: string, opts?: Partial<LogEntry>) => void;
+  child: (childModule: string) => Logger;
+};
+```
+
+This type is also exported as `Logger` (`export type Logger = ReturnType<typeof createLogger>`).
+
 ---
 
 ### Convenience Functions (root logger)

@@ -37,6 +37,21 @@ interface UserListItem {
 
 `roleIds` and `roleCodes` are parallel arrays — index `0` in both refers to the same assignment. A user with no roles returns empty arrays.
 
+## RoleListItem Interface
+
+`listRoles` returns an array of the following shape:
+
+```typescript
+interface RoleListItem {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+}
+```
+
+Only roles with `status = 'Activo'` in the `roles` table are returned.
+
 ## Creating a User
 
 ```typescript
@@ -55,7 +70,7 @@ createUser(tenantCode: string | null, data: {
 2. **Inserts a row in the `users` table** with an `auth_user_id` foreign key linking back to the Supabase Auth identity.
 3. **Assigns the initial role** — if `roleId` is provided, inserts a row into `user_roles`. This step is optional; a user can be created without a role and have roles assigned later.
 
-**Rollback behavior:** if the `users` insert fails after the Auth user has already been created, the Auth user is deleted via `auth.admin.deleteUser` to prevent orphaned auth accounts.
+**Rollback behavior:** if the `users` insert fails after the Auth user has already been created, the Auth user is deleted via `auth.admin.deleteUser` to prevent orphaned auth accounts. If the `users` insert succeeds but the role assignment fails, the user row is kept and the action returns `success: true` with a partial error message describing the role failure — the user account itself is not rolled back at that stage.
 
 ```typescript
 const result = await createUser("acme", {
@@ -100,7 +115,7 @@ await removeRole("acme", userId, roleId);
 
 ## Available Role Codes
 
-The following `role_code` values are defined in the RBAC matrix and resolved by the dashboard category mapper in `src/erp/actions/kpis.ts`:
+The following `role_code` values are resolved by the dashboard category mapper in `src/erp/actions/kpis.ts` `resolveCategory()`. Only role codes that appear in that function are listed here.
 
 | Role Code | Dashboard Category |
 |-----------|-------------------|

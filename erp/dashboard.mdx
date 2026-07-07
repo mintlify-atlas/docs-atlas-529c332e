@@ -1,7 +1,7 @@
 ---
-title: "ERP Dashboard: Role-adaptive KPIs and Operations Command Center"
+title: "ERP Dashboard: Role-Adaptive KPIs and Command Center"
 sidebarTitle: "Dashboard"
-description: "How the ERP B2B Premium dashboard adapts KPIs and task queues to each user role, and what the command center data includes."
+description: "How the ERP B2B Premium dashboard adapts KPIs, task queues, and notifications to each user role, and what the command center data interface contains."
 ---
 
 The ERP dashboard (`/dashboard`) is the central operations hub. It shows role-specific KPIs, a real-time task queue, operations health scores, a business events feed, and an audit log — all filtered to the authenticated user's tenant.
@@ -12,8 +12,9 @@ Every user lands on the same `/dashboard` route, but the KPIs, queue title, and 
 
 | Category | Role Codes | KPIs Shown | Queue Focus |
 |---|---|---|---|
-| admin / director | `SUPER_ADMIN`, `ADMIN_EMPRESA`, `GERENTE_GENERAL`, `DIRECTOR_FINANCIERO` | Facturación Emitida, Recaudo Cartera, Capacidad Activa, Conversión Leads | Overdue invoices |
-| comercial | `DIRECTOR_COMERCIAL`, `EJECUTIVO_COMERCIAL` | Leads Activos, Leads Calientes, Leads Nuevos (mes), Tasa de Conversión | Hot leads |
+| admin | `SUPER_ADMIN`, `ADMIN_EMPRESA`, `ADMIN_DEV` | Facturación Emitida, Recaudo Cartera, Capacidad Activa, Conversión Leads | Overdue invoices |
+| director | `GERENTE_GENERAL`, `DIRECTOR_FINANCIERO`, `JEFE_FINANZAS`, `AUXILIAR_FINANZAS` | Facturación Emitida, Recaudo Cartera, Capacidad Activa, Conversión Leads | Overdue invoices |
+| comercial | `DIRECTOR_COMERCIAL`, `EJECUTIVO_COMERCIAL`, `INGENIERO_COMERCIAL` | Leads Activos, Leads Calientes, Leads Nuevos (mes), Tasa de Conversión | Hot leads |
 | operaciones | `DIRECTOR_OPERACIONES`, `JEFE_PROYECTOS` | OTs Activas, OTs Vencidas, Vencen esta semana, OTs Completadas | Overdue work orders |
 | tecnico | `TECNICO_CAMPO`, `JEFE_MANTENIMIENTO` | OTs Activas, OTs Vencidas, Vencen Hoy, Prioridad Alta | My work orders |
 | almacenista | `ALMACENISTA`, `JEFE_INVENTARIO` | Items Stock Bajo, Items en Stock, Unidades Reservadas, Items OK | Reorder pending |

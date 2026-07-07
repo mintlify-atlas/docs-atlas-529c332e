@@ -20,7 +20,6 @@ Work orders (jobs / OTs) represent field operations — installations, maintenan
 Three priority levels are supported: `ALTA` (HIGH), `MEDIA` (MEDIUM), and `BAJA` (LOW). Priority values are stored in the database as English codes (`HIGH`, `MEDIUM`, `LOW`) and normalized to Spanish on read.
 
 - **ALTA** jobs appear in the command center task queue (`queueTasks`) and generate `NotificationItem` entries for operations and technician roles.
-- **ALTA** jobs count toward the `operationsHealth.billing.alerts` metric if they are also overdue.
 
 ## `getJobs(tenantCode?)` → job list
 

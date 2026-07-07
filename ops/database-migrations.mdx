@@ -13,8 +13,7 @@ Migration files follow the format `YYYYMMDDHHMMSS_description.sql`:
 ```
 supabase/migrations/
   20260621000038_public_rls_policies.sql
-  20260622120000_add_diagnostic_reports.sql
-  20260701090000_leads_scoring_columns.sql
+  20260622000039_rls_authenticated_policies.sql
 ```
 
 The timestamp prefix guarantees deterministic ordering and prevents filename collisions across parallel branches.
@@ -153,7 +152,10 @@ Run through this checklist for every migration that targets the production Supab
 <Steps>
   <Step title="Take a manual backup">
     ```bash
-    pg_dump --schema=public --file=backup_$(date +%Y%m%d).sql
+    pg_dump --dbname="$SUPABASE_DATABASE_URL" \
+      --schema=public \
+      --exclude-table-data='audit_logs' \
+      --file=backup_$(date +%Y%m%d).sql
     ```
 
     Store the backup file in a secure, off-database location (e.g. an S3 bucket or encrypted volume) with at least 30 days retention.

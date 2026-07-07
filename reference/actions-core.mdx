@@ -1,7 +1,7 @@
 ---
-title: "Core ERP Server Actions: Clients, Jobs, Inventory, Invoices, Settings"
+title: "Core ERP Server Actions: Clients, Jobs, Inventory & Settings"
 sidebarTitle: "Core Actions"
-description: "API reference for all core ERP Server Actions — clients, jobs, inventory movements, invoices, and tenant settings — with full parameter and return type documentation."
+description: "Reference for core ERP Server Actions — clients, jobs, inventory movements, invoices, and tenant settings — with full parameter and return types."
 ---
 
 Core ERP Server Actions live in `src/erp/actions/core.ts`. All actions are marked `"use server"` and run exclusively on the server. Every authenticated action calls `requireAction()` for RBAC enforcement and `validateTenantAccess()` for tenant isolation before querying Supabase.
@@ -143,7 +143,7 @@ createJob(
   jobData: {
     description: string;
     assignedTech: string;
-    priority: "ALTA" | "MEDIA" | "BAJA";
+    priority: string;
     startDate: string;
     endDate: string;
   }
@@ -164,8 +164,8 @@ Creates a new job (work order) for the tenant. Requires the `jobs.create` RBAC p
   Assigned technician label. The action resolves the actual `assigned_user_id` to the tenant owner.
 </ParamField>
 
-<ParamField path="jobData.priority" type='"ALTA" | "MEDIA" | "BAJA"' required>
-  Display priority. Mapped back to DB values: `ALTA → HIGH`, `BAJA → LOW`, `MEDIA → MEDIUM`.
+<ParamField path="jobData.priority" type="string" required>
+  Display priority string. Mapped back to DB values: `ALTA → HIGH`, `BAJA → LOW`, any other value → `MEDIUM`.
 </ParamField>
 
 <ParamField path="jobData.startDate" type="string" required>

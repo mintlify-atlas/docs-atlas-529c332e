@@ -24,7 +24,7 @@ The wizard at `/wizard` is a 5-step guided form that walks industrial buyers thr
     |---|---|---|
     | `heavy_plant` | Heavy manufacturing / smelting | 45 |
     | `data_center` | Server room / data center | 30 |
-    | `mining` | Mining operations | 45 (heavy_plant rate) |
+    | `mining` | Mining operations | 10 (default rate — not separately mapped) |
     | `warehouse` | Storage / warehouse | 8 |
     | `default` | General industrial | 10 |
   </Step>
@@ -77,7 +77,7 @@ submitWizardData(
 
 1. **Zod validation** — `wizardSubmissionSchema` validates all fields. On failure, field-level error messages are concatenated and thrown as a single `Error`.
 2. **XSS sanitization** — `sanitizeObject()` from `src/lib/utils/sanitize.ts` is applied to all string fields in the parsed data.
-3. **Rate limiting** — `checkRateLimit(`wizard:${email}`, 10, 60000)` enforces a maximum of 10 requests per minute per email address. Exceeding the limit throws `"Demasiadas solicitudes. Intente nuevamente en un minuto."`.
+3. **Rate limiting** — `checkRateLimit(`wizard:${email}`)` enforces a maximum of 10 requests per minute per email address (default limits). Exceeding the limit throws `"Demasiadas solicitudes. Intente nuevamente en un minuto."`.
 4. **Tenant validation** — The tenant must exist in the `tenants` table with `status = 'Activo'`.
 5. **Engineering calculation** — `calculateRequiredCfm()` from `src/utils/engineering.ts` computes `cfm` and `cubicMeters` from the submitted dimensions and environment.
 6. **Price estimation** — `estimatePrice()` from `src/utils/pricing.ts` computes COP and USD ranges using the service type, urgency multiplier, and volume.

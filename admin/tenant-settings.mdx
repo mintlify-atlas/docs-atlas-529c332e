@@ -16,7 +16,7 @@ All three actions live in `src/erp/actions/core.ts` and are marked `"use server"
 getTenantSettings(tenantCode?: string | null): Promise<Record<string, any>>
 ```
 
-Requires an active authenticated session and passes the caller through `validateTenantAccess`. For any row where `is_encrypted = true`, the action calls the `get_tenant_setting` Postgres RPC to decrypt the value server-side before returning it. The result is a flat `Record<string, any>` keyed by `config_key`.
+Requires an active authenticated session and passes the caller through `validateTenantAccess`. For any row where `is_encrypted = true`, the action calls the `get_tenant_setting` Postgres RPC — with parameters `p_tenant_id`, `p_module`, and `p_key` — to decrypt the value server-side before returning it. The result is a flat `Record<string, any>` keyed by `config_key`.
 
 ### `getPublicTenantSettings`
 
@@ -43,7 +43,7 @@ updateTenantSettings(
   key: string,
   value: any,
   isEncrypted?: boolean   // default: false
-): Promise<TenantSettingRow>
+): Promise<Record<string, any>>
 ```
 
 Requires the `settings.manage` permission (enforced via `requireAction`) and `validateTenantAccess`. Performs an upsert on the unique constraint `(tenant_id, module, config_key)` so calling it multiple times for the same key is always safe.
@@ -55,7 +55,7 @@ Requires the `settings.manage` permission (enforced via `requireAction`) and `va
 ```typescript
 await updateTenantSettings(
   "acme",           // tenantCode
-  "branding",       // module
+  "IDENTIDAD",      // module (matches saveTenantBranding module assignment)
   "primary_color",  // key
   "#2563EB",        // value
   false             // isEncrypted
@@ -97,7 +97,7 @@ The `tenant_settings` table uses the following composite unique key:
 | Column | Type | Notes |
 |--------|------|-------|
 | `tenant_id` | uuid | FK → `tenants.id` |
-| `module` | text | Logical grouping, e.g. `branding`, `integrations` |
+| `module` | text | Logical grouping, e.g. `IDENTIDAD`, `EMPRESA`, `LOCALIZACION` |
 | `config_key` | text | Setting identifier |
 | `config_value` | jsonb | Plain value or ciphertext |
 | `is_encrypted` | boolean | Triggers RPC-based decryption on read |

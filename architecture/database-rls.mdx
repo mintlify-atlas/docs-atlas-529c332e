@@ -1,7 +1,7 @@
 ---
 title: "Row Level Security: Database-enforced Tenant Isolation"
 sidebarTitle: "Database RLS"
-description: "How Supabase Row Level Security policies enforce tenant isolation and anonymous access for the public site in ERP B2B Premium."
+description: "How Supabase Row Level Security policies enforce per-tenant data isolation and anonymous access boundaries for the public site in ERP B2B Premium."
 ---
 
 Row Level Security (RLS) is the **second line of defense** after application-layer tenant checking. Even if a bug in a Server Action bypasses `validateTenantAccess()`, the database itself will reject any query that violates the row's policy. Every table in the `public` schema has `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` applied. Policies are organized into two tiers by Postgres role: `anon` for the public site and `authenticated` for the ERP dashboard.
@@ -10,7 +10,7 @@ Row Level Security (RLS) is the **second line of defense** after application-lay
 
 ### Tier 1 — Anonymous Policies (migration `20260621000038`)
 
-Migration `20260621000038_public_rls_policies.sql` grants the minimum access the public site needs to function: read-only access to catalog and branding tables, and write-only `INSERT` access to the four tables that the lead-generation wizard writes to. No `UPDATE` or `DELETE` is ever granted to the `anon` role.
+Migration `20260621000038_public_rls_policies.sql` grants the minimum access the public site needs to function: read-only `SELECT` access to catalog, branding, and public content tables; `INSERT` access to the tables the lead-generation wizard writes to; and `SELECT` access on wizard tables where the action must read back a just-inserted row. No `UPDATE` or `DELETE` is ever granted to the `anon` role.
 
 ### Tier 2 — Authenticated Policies (migration `20260622000039`)
 
@@ -37,10 +37,14 @@ This pattern is applied uniformly across all tenant-scoped tables — clients, c
 | `media_assets` | SELECT | All media |
 | `seo_metadata` | SELECT | Product SEO |
 | `tenant_settings` | SELECT (`is_public = true`) | Public branding |
+| `website_pages` | SELECT (status = `'ACTIVA'`) | Public web pages |
+| `tenants` | SELECT (status = `'Activo'`) | Wizard tenant validation |
 | `leads` | INSERT | Wizard lead capture |
-| `clients` | INSERT | Wizard client upsert |
-| `client_contacts` | INSERT | Wizard contact upsert |
-| `diagnostic_reports` | INSERT | Wizard diagnostics |
+| `clients` | SELECT + INSERT | Wizard client upsert |
+| `client_contacts` | SELECT + INSERT | Wizard contact upsert |
+| `diagnostic_reports` | SELECT + INSERT | Wizard diagnostics |
+| `wizard_sessions` | INSERT | Wizard session tracking |
+| `lead_sources` | INSERT | Contact form submissions |
 
 ## Authenticated Policy Example
 

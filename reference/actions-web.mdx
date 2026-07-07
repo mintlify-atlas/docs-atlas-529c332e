@@ -352,23 +352,37 @@ Invalidates the `catalog-all` cache on success.
 
 ---
 
-## Leads (Internal)
+## Leads
 
 ### createLeadWithScore
 
-`src/web/actions/leads.ts` — called internally by `submitWizardData`.
+`src/web/actions/leads.ts`
 
-This function is not exported as a standalone public action but is the lead-scoring engine invoked at step 5 of the wizard pipeline. It scores the incoming lead and inserts it into the `leads` table with a `risk_level` and numeric `score`.
+```typescript
+createLeadWithScore(
+  tenantCode: string | null,
+  rawLeadData: {
+    clientId: string;
+    contactId: string;
+    notes?: string;
+    role: string;
+    urgency: string;
+    email: string;
+  }
+): Promise<Lead>
+```
 
-**Scoring factors:**
+Exported server action that scores an incoming lead and inserts it into the `leads` table. Called internally by `submitWizardData` at step 5 of the wizard pipeline, and also available for direct invocation. Validates input with Zod, applies rate limiting per email, and verifies the tenant is `"Activo"` before writing. Inserts using the public anon client (RLS enforced).
 
-| Signal | Source | Impact |
+**Scoring factors (via `calculateLeadScore`):**
+
+| Signal | Parameter | Impact |
 |---|---|---|
-| Email domain | `email` field | Corporate domains score higher than public providers (Gmail, Hotmail, etc.) |
-| Job title seniority | `cargo` field | C-level and director titles score higher |
-| Urgency | `urgencia` field | `alta` scores highest, `baja` lowest |
+| Job title seniority | `role` | Director de Planta / Gerente de Mantenimiento / Supervisor HVAC: +40 pts. Ingeniero de Proyectos / Compras: +25 pts. Other: +10 pts. |
+| Urgency | `urgency` | `alta`: +40 pts. `media`: +20 pts. `baja`: +5 pts. |
+| Email domain | `email` | Public domain (Gmail, Hotmail, etc.): −20 pts penalty. Disposable/invalid domain: `SPAM`, score zeroed. |
 
-The resulting `risk_level` is one of `CALIENTE` (hot), `TIBIO` (warm), `FRIO` (cold), or `SPAM`. The lead is created using the anon public client and goes through RLS policies, with `status` defaulting to `"NUEVO"`.
+Score is clamped to `[0, 100]`. `risk_level` classification: `CALIENTE` (≥ 70), `TIBIO` (≥ 40), `FRIO` (< 40), or `SPAM` (disposable/invalid email). The lead is inserted with `status: "NUEVO"` and `lead_source: "WEBSITE"`.
 
 ---
 

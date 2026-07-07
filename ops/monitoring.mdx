@@ -142,7 +142,7 @@ const catalog = await getIndustrialCatalog(tenantCode);
 const elapsedMs = timer.stop(); // logs warning if > 300ms
 ```
 
-`stop()` returns the elapsed time in milliseconds so you can include it in your own response metrics.
+`stop()` accepts an optional `extra` object (`Record<string, unknown>`) that is merged into the log entry, and returns the elapsed time in milliseconds so you can include it in your own response metrics.
 
 Wrap **all slow Server Actions** — catalog fetches, wizard submissions, report generation — with `startTimer` so that performance regressions surface automatically in the log stream.
 
@@ -150,31 +150,36 @@ Wrap **all slow Server Actions** — catalog fetches, wizard submissions, report
 
 `AppError` at `src/lib/utils/app-error.ts` is the canonical typed error for the entire application.
 
-### Error codes and HTTP status
+### Error codes
 
-| Code | HTTP Status | When to use |
-|------|-------------|-------------|
-| `VALIDATION_ERROR` | 400 | Invalid or malformed input |
-| `AUTH_ERROR` | 401 | Unauthenticated request / expired session |
-| `FORBIDDEN` | 403 | Authenticated but not authorized |
-| `NOT_FOUND` | 404 | Resource does not exist |
-| `RATE_LIMITED` | 429 | Too many requests |
-| `TENANT_MISMATCH` | 403 | Cross-tenant data access attempt |
-| `INTERNAL_ERROR` | 500 | Unexpected server error (default) |
+| Code | When to use |
+|------|-------------|
+| `VALIDATION_ERROR` | Invalid or malformed input |
+| `AUTH_ERROR` | Unauthenticated request / expired session |
+| `FORBIDDEN` | Authenticated but not authorized |
+| `NOT_FOUND` | Resource does not exist |
+| `RATE_LIMITED` | Too many requests |
+| `TENANT_MISMATCH` | Cross-tenant data access attempt |
+| `INTERNAL_ERROR` | Unexpected server error (default) |
 
 ### Server Action response convention
 
-All Server Actions in the project return a discriminated union:
+All Server Actions use `toActionResponse()` from `app-error.ts` to wrap any promise and convert thrown `AppError` instances into a discriminated union:
 
 ```typescript
-// Success
-{ status: "success", data: T }
+import { toActionResponse } from "@/lib/utils/app-error";
 
-// Error
-{ status: "error", code: ErrorCode, message: string }
+const { data, error } = await toActionResponse(someAsyncOperation());
+
+if (error) {
+  // error is an AppError instance with .code, .statusCode, and .message
+  console.error(error.code, error.message);
+} else {
+  // data is the resolved value
+}
 ```
 
-Use `toActionResponse()` from `app-error.ts` to wrap any promise and convert thrown `AppError` instances into the error shape automatically.
+`toActionResponse` catches thrown `AppError` instances and returns them as `{ data: null, error: AppError }`. Any other thrown value is wrapped in a new `AppError` with code `INTERNAL_ERROR` before being returned.
 
 ## Recommended alerts
 

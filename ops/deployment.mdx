@@ -40,7 +40,6 @@ The primary performance bottleneck is Supabase (Postgres + storage), not the Nex
         vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY
         vercel env add SUPABASE_SERVICE_ROLE_KEY
         vercel env add NEXT_PUBLIC_SITE_URL
-        vercel env add NEXT_PUBLIC_DEFAULT_TENANT_CODE
         ```
       </Step>
 
@@ -82,7 +81,7 @@ The primary performance bottleneck is Supabase (Postgres + storage), not the Nex
     The `Dockerfile` uses three stages to produce a minimal, secure image:
 
     | Stage | Base image | Purpose |
-    |-------|-----------|---------|
+    |-------|-----------|---------| 
     | `deps` | `node:22-alpine` | Installs production dependencies only (`npm ci --only=production`) |
     | `builder` | `node:22-alpine` | Installs all deps and runs `npm run build` |
     | `runner` | `node:22-alpine` | Copies the compiled standalone output; runs as non-root user |
@@ -145,14 +144,15 @@ add_header X-XSS-Protection "1; mode=block" always;
 
 ## CI/CD pipeline
 
-The GitHub Actions workflow at `.github/workflows/ci.yml` runs automatically on every push and pull request to `main` / `master`. It executes four quality gates in sequence:
+The GitHub Actions workflow at `.github/workflows/ci.yml` runs automatically on every push and pull request to `main` / `master`. It executes five quality gates in sequence:
 
 | Step | Command | Purpose |
-|------|---------|---------|
+|------|---------|---------| 
 | 1 | `npx tsc --noEmit` | TypeScript type check — zero type errors required |
 | 2 | `npm run lint` | ESLint — no new lint errors allowed |
 | 3 | `npx vitest run --reporter=verbose` | Unit and integration tests |
-| 4 | `npm audit --audit-level=high` | Security audit — flags `high`+ vulnerabilities |
+| 4 | `npx vitest run --coverage --reporter=text` | Coverage report |
+| 5 | `npm audit --audit-level=high` | Security audit — flags `high`+ vulnerabilities |
 
 The CI job uses Node.js 22.x and npm caching to keep runs fast. `npm audit` is configured with `continue-on-error: true` so audit findings are surfaced as warnings rather than blocking merges, but the DevOps team must review and resolve `high`+ findings before each production release.
 
@@ -164,4 +164,4 @@ Before any deployment you can run the local validation script which mirrors the 
 bash scripts/deploy.sh
 ```
 
-The script verifies that all required environment variables are set, then runs `tsc --noEmit`, `lint`, `vitest run`, and `npm run build` in order. It exits non-zero on the first failure.
+The script verifies that `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` are set, then runs `tsc --noEmit`, `lint`, `vitest run`, and `npm run build` in order. It exits non-zero on the first failure.
