@@ -1,0 +1,107 @@
+---
+title: "Multi-tenant Architecture with Supabase RLS"
+sidebarTitle: "Multi-tenancy"
+description: "How ERP B2B Premium isolates tenant data using tenant_id columns, a hybrid static+dynamic resolver, and Row Level Security policies."
+---
+
+Every database row in ERP B2B Premium carries a `tenant_id` UUID foreign-keyed to the `tenants` table. Tenant isolation is enforced at **two independent layers**: the application layer (tenant resolver + `validateTenantAccess`) and the database layer (Supabase Row Level Security policies). Either layer alone would be sufficient to block cross-tenant access; both together make a bypassed security control an explicit architectural step, not an accident.
+
+## Tenant Resolver Strategy
+
+`src/platform/tenant/tenant-resolver.ts` translates a human-readable `tenant_code` string (e.g. `"acme"`) into a UUID suitable for database queries. It uses a three-tier lookup with a fourth fallback:
+
+### Tier 1 — Static Map (seed tenants)
+
+```ts
+const TENANT_CODE_TO_ID: Record<string, string> = {
+  acme: "a0000000-0000-0000-0000-000000000000",
+  apex: "b0000000-0000-0000-0000-000000000000",
+};
+```
+
+Lookup here is synchronous and requires no I/O. These two tenants are seeded in every environment (development, staging, production) and serve as the baseline for local development and automated tests. **These UUIDs are seed-only** — in production, the database is the single source of truth and these values are only used as a fast path for known tenants.
+
+### Tier 2 — Dynamic In-Memory Cache (`DYNAMIC_TENANT_CACHE`)
+
+Tenants registered at runtime (beyond the two seed tenants) are stored in `DYNAMIC_TENANT_CACHE` after their first successful database lookup. Subsequent requests for the same tenant code return immediately from memory with no database round-trip.
+
+<Warning>
+  The in-memory cache is lost on every cold start (Vercel serverless). This is intentional — maintaining potentially stale data across serverless instances is more dangerous than paying the cost of one extra database round-trip per cold start. Never rely on `DYNAMIC_TENANT_CACHE` for correctness; it is a performance optimization only.
+</Warning>
+
+### Tier 3 — Database Fallback
+
+If a tenant code is not found in either the static map or the in-memory cache, the resolver queries Supabase using the admin client:
+
+```ts
+const { data } = await supabaseAdmin
+  .from("tenants")
+  .select("id")
+  .eq("tenant_code", tenantCode)
+  .maybeSingle();
+```
+
+A successful result is stored in `DYNAMIC_TENANT_CACHE` before being returned, so only the first request for a new tenant incurs the DB round-trip.
+
+### Tier 4 — Default Fallback
+
+If the database query returns no result (unknown tenant code, or Supabase is unavailable), the resolver falls back to `NEXT_PUBLIC_DEFAULT_TENANT_CODE`:
+
+```ts
+const DEFAULT_TENANT_CODE =
+  process.env.NEXT_PUBLIC_DEFAULT_TENANT_CODE || "acme";
+```
+
+This prevents a hard crash in public-facing paths (e.g. the wizard) where a missing tenant code should degrade gracefully rather than produce a 500 error.
+
+## Exported API
+
+```typescript
+// Async (authoritative — hits DB if needed)
+resolveTenantIdAsync(tenantCode?: string | null): Promise<string>
+resolveTenantOwnerUserIdAsync(tenantId: string, overrideUserId?: string | null): Promise<string>
+
+// Sync (static map only — use for UI, not for write operations)
+resolveTenantId(tenantCode?: string | null): string
+resolveTenantOwnerUserId(tenantId: string): string
+
+// Validation
+validateStaticTenantIds(): Promise<string[]>
+```
+
+**Use `resolveTenantIdAsync` in all Server Actions** — it is the authoritative path and will always return the correct UUID. Use `resolveTenantId` (sync) only for non-critical UI rendering where a stale or default value is acceptable and a database call is not possible.
+
+`validateStaticTenantIds()` is a utility for tests. It queries the database and returns a list of collision strings if a seed UUID has been overwritten by a real tenant row — an empty array means the seed configuration is clean.
+
+<Tip>
+  Always pass the real `auth.uid()` as `overrideUserId` when calling `resolveTenantOwnerUserIdAsync` inside authenticated Server Actions. When `overrideUserId` is provided it is returned directly, skipping all lookups. This preserves full user traceability in audit logs — rows will show the actual authenticated user as `created_by` / `updated_by`, not the tenant's generic owner account.
+</Tip>
+
+## How to Add a New Tenant
+
+1. Insert a row into the `tenants` table with a unique `tenant_code`, a UUID `id`, and `status = 'Activo'`:
+
+   ```sql
+   INSERT INTO public.tenants (id, tenant_code, name, status)
+   VALUES (gen_random_uuid(), 'newcorp', 'New Corp S.A.', 'Activo');
+   ```
+
+2. The new tenant is immediately discoverable via the Tier 3 database fallback. No code change or deployment is required.
+
+3. To make this tenant the default for environments where `tenant_code` is absent, set:
+
+   ```env
+   NEXT_PUBLIC_DEFAULT_TENANT_CODE=newcorp
+   ```
+
+4. Optionally seed `tenant_settings` rows for branding (logo, colors, company name) so the public site renders correctly before any ERP user logs in.
+
+## Suppressing Unknown-Tenant Warnings
+
+In CI environments and integration test suites, requests may be made with synthetic or fixture tenant codes that are intentionally not in the database. To prevent noisy `console.warn` output, set:
+
+```env
+SUPPRESS_TENANT_WARNINGS=true
+```
+
+When this variable is `"true"`, the resolver silently falls back to the default tenant without logging. **Do not set this in production** — unexpected tenant codes in production are a signal of misconfiguration and should always surface as warnings.

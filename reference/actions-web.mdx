@@ -1,0 +1,512 @@
+---
+title: "Web Server Actions: Wizard, Catalog, Leads, and Branding"
+sidebarTitle: "Web Actions"
+description: "API reference for the public-facing Server Actions in ERP B2B Premium — the pre-engineering wizard, product catalog, lead creation, and tenant branding."
+---
+
+Web Server Actions in `src/web/actions/` power the public-facing parts of the platform. They use `getPublicServerClient()` (anon key + RLS), not the admin client, ensuring all writes go through anonymous RLS policies and that unauthenticated visitors cannot escalate privileges. Only catalog mutation and branding actions that require authentication switch to `supabaseAdmin` after passing an RBAC guard.
+
+---
+
+## Wizard
+
+### submitWizardData
+
+`src/web/actions/wizard.ts`
+
+```typescript
+submitWizardData(
+  tenantCode: string | null,
+  rawData: WizardSubmission
+): Promise<WizardResult>
+```
+
+The main entry point for the public pre-engineering wizard. Validates and sanitizes all input with Zod + XSS sanitization, enforces a per-email rate limit, then executes the following pipeline:
+
+1. Verify the tenant exists and its status is `"Activo"`.
+2. Calculate required CFM and price estimate via the engineering utilities (`calculateRequiredCfm`, `estimatePrice`).
+3. Upsert the **client** record by `legal_name` (creates if absent, reuses if present).
+4. Upsert the **contact** record by email within the client (creates if absent, reuses if present).
+5. Create a scored **lead** via `createLeadWithScore` (see below).
+6. Insert a **diagnostic report** (`diagnostic_reports`) linking the lead, dimensions, CFM result, and price ranges.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code. Used to scope all database writes to the correct tenant.
+</ParamField>
+
+<ParamField path="rawData.servicio" type='"fabricacion" | "venta" | "mantenimiento" | "reparacion" | "otro"' required>
+  Type of industrial service being requested.
+</ParamField>
+
+<ParamField path="rawData.length" type="number" required>
+  Space length in meters. Must be a positive number.
+</ParamField>
+
+<ParamField path="rawData.width" type="number" required>
+  Space width in meters. Must be a positive number.
+</ParamField>
+
+<ParamField path="rawData.height" type="number" required>
+  Space height in meters. Must be a positive number.
+</ParamField>
+
+<ParamField path="rawData.environment" type='"heavy_plant" | "data_center" | "mining" | "warehouse" | "default"' required>
+  Industrial environment type. Affects the CFM multiplier and materials recommendation.
+</ParamField>
+
+<ParamField path="rawData.nombre" type="string" required>
+  Contact's full name. Minimum 2 characters.
+</ParamField>
+
+<ParamField path="rawData.empresa" type="string" required>
+  Company legal name. Used as the `legal_name` for upsert. Minimum 2 characters.
+</ParamField>
+
+<ParamField path="rawData.cargo" type="string" required>
+  Contact's job title. Used in lead scoring. Minimum 2 characters.
+</ParamField>
+
+<ParamField path="rawData.telefono" type="string" required>
+  Contact phone number. Minimum 7 characters.
+</ParamField>
+
+<ParamField path="rawData.email" type="string" required>
+  Contact email address. Must be a valid email format. Used as the rate-limiting key and for contact deduplication.
+</ParamField>
+
+<ParamField path="rawData.ciudad" type="string" required>
+  City where the project is located. Minimum 2 characters.
+</ParamField>
+
+<ParamField path="rawData.urgencia" type='"baja" | "media" | "alta"' required>
+  Project urgency level. Affects lead scoring and price estimation.
+</ParamField>
+
+<ParamField path="rawData.otroDetalle" type="string" optional>
+  Free-text detail for the service type. Only relevant when `servicio` is `"otro"`.
+</ParamField>
+
+**Returns** `Promise<WizardResult>`:
+
+<ResponseField name="diagnosticCode" type="string">
+  Auto-generated code for the diagnostic report, e.g. `"DX-2026-0001"`.
+</ResponseField>
+
+<ResponseField name="requiredCfm" type="number">
+  Calculated airflow requirement in CFM (cubic feet per minute).
+</ResponseField>
+
+<ResponseField name="cfmCategory" type='"CRITICAL" | "HIGH" | "STANDARD" | "COMPACT"'>
+  CFM classification tier: `CRITICAL` (≥ 15,000 CFM), `HIGH` (≥ 8,000 CFM), `COMPACT` (< 2,000 CFM), or `STANDARD` (everything in between).
+</ResponseField>
+
+<ResponseField name="calculatedVolumeM3" type="number">
+  Space volume in cubic meters (`length × width × height`).
+</ResponseField>
+
+<ResponseField name="estimatedPriceMinCop" type="number">
+  Minimum price estimate in Colombian Pesos (COP).
+</ResponseField>
+
+<ResponseField name="estimatedPriceMaxCop" type="number">
+  Maximum price estimate in Colombian Pesos (COP).
+</ResponseField>
+
+<ResponseField name="estimatedPriceMinUsd" type="number">
+  Minimum price estimate in US Dollars (USD).
+</ResponseField>
+
+<ResponseField name="estimatedPriceMaxUsd" type="number">
+  Maximum price estimate in US Dollars (USD).
+</ResponseField>
+
+<ResponseField name="materialsRecommendation" type="string">
+  Dynamically generated materials recommendation based on the environment type. Examples:
+  - `heavy_plant` / `mining` → epoxy-coated industrial blower with extruded aluminium blades.
+  - `data_center` → EPA/HEPA air injection system with low-vibration acoustic control.
+  - All others → general-purpose axial extractor with galvanized steel ducting.
+</ResponseField>
+
+<ResponseField name="leadId" type="string">
+  UUID of the created lead record in the `leads` table.
+</ResponseField>
+
+**Throws:**
+- `"Datos de entrada inválidos: ..."` — Zod validation failed; message includes field-level details.
+- `"Demasiadas solicitudes. Intente nuevamente en un minuto."` — rate limit exceeded.
+- `"El servicio no está disponible para este tenant."` — tenant not found or not `Activo`.
+- Generic Supabase errors on write failures.
+
+---
+
+## Catalog
+
+### getIndustrialCatalog
+
+`src/web/actions/catalog.ts`
+
+```typescript
+getIndustrialCatalog(tenantCode?: string | null): Promise<CatalogCategory[]>
+```
+
+Fetches the complete catalog hierarchy for the tenant in a single joined Supabase query (categories → subcategories → families → series → products → specifications / images / documents / CAD files). SEO metadata is fetched in a parallel query and merged into each product.
+
+Results are cached with Next.js `unstable_cache`:
+- **Revalidation:** 60 seconds
+- **Cache tag:** `catalog-all`
+
+All catalog mutation actions call `_invalidateCache(tenantCode)` to bust the tag on write.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<CatalogCategory[]>` — a fully nested hierarchy:
+
+```typescript
+interface CatalogCategory {
+  id: string;
+  categoryCode: string;
+  name: string;
+  description: string;
+  subcategories: CatalogSubcategory[];
+}
+
+interface CatalogSubcategory {
+  id: string;
+  subcategoryCode: string;
+  name: string;
+  description: string;
+  families: CatalogFamily[];
+}
+
+interface CatalogFamily {
+  id: string;
+  familyCode: string;
+  name: string;
+  description: string;
+  series: CatalogSeries[];
+}
+
+interface CatalogSeries {
+  id: string;
+  seriesCode: string;
+  name: string;
+  description: string;
+  products: ProductDetail[];
+}
+
+interface ProductDetail {
+  id: string;
+  productCode: string;
+  name: string;
+  description: string;
+  status: string;
+  specifications: Record<string, string>;
+  images: ProductMedia[];
+  documents: ProductMedia[];
+  cadFiles: ProductMedia[];
+  seo?: {
+    metaTitle: string;
+    metaDescription: string;
+    metaKeywords: string;
+    slug: string;
+  };
+}
+```
+
+---
+
+### saveProduct
+
+```typescript
+saveProduct(
+  tenantCode: string | null,
+  product: {
+    id?: string;
+    productCode: string;
+    name: string;
+    description: string;
+    status: string;
+    seriesId: string;
+    specifications: Record<string, string>;
+  }
+): Promise<{ success: boolean; productId?: string; error?: string }>
+```
+
+Creates or updates a product and its technical specifications. When `id` is provided the product is updated; otherwise a new product is inserted. Specifications are replaced atomically: existing rows for the product are deleted before the new set is inserted.
+
+Invalidates the `catalog-all` cache on success.
+
+**Required permission:** `items.manage`
+
+---
+
+### deleteProduct
+
+```typescript
+deleteProduct(
+  tenantCode: string | null,
+  productId: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Soft-deletes a product by setting `deleted_at` to the current timestamp. The product remains in the database but is excluded from all catalog reads.
+
+Invalidates the `catalog-all` cache on success.
+
+**Required permission:** `items.manage`
+
+---
+
+### saveCategory
+
+```typescript
+saveCategory(
+  tenantCode: string | null,
+  category: {
+    id?: string;
+    categoryCode: string;
+    name: string;
+    description: string;
+  }
+): Promise<{ success: boolean; error?: string }>
+```
+
+Creates or updates a top-level product category. When `id` is present the category is updated; otherwise a new row is inserted into `product_categories`.
+
+Invalidates the `catalog-all` cache on success.
+
+**Required permission:** `items.manage`
+
+---
+
+### deleteCategory
+
+```typescript
+deleteCategory(
+  tenantCode: string | null,
+  categoryId: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Soft-deletes a category by setting `deleted_at`. The category and all its descendants remain in the database but are excluded from `getIndustrialCatalog`.
+
+Invalidates the `catalog-all` cache on success.
+
+**Required permission:** `items.manage`
+
+---
+
+### addProductImage
+
+```typescript
+addProductImage(
+  tenantCode: string | null,
+  productId: string,
+  image: {
+    fileName: string;
+    filePath: string;
+    fileSize: number;
+    mimeType: string;
+    altText?: string;
+  }
+): Promise<{ asset: MediaAsset; prodImg: ProductImage }>
+```
+
+Registers a media asset in the `media_assets` table and then creates a join row in `product_images` linking the asset to the product. The `sort_order` defaults to `10`.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="productId" type="string" required>
+  UUID of the product to attach the image to.
+</ParamField>
+
+<ParamField path="image.fileName" type="string" required>
+  Original file name (e.g. `"extractor-axial-ev300.png"`).
+</ParamField>
+
+<ParamField path="image.filePath" type="string" required>
+  Storage path or public URL of the uploaded file.
+</ParamField>
+
+<ParamField path="image.fileSize" type="number" required>
+  File size in bytes.
+</ParamField>
+
+<ParamField path="image.mimeType" type="string" required>
+  MIME type (e.g. `"image/png"`).
+</ParamField>
+
+<ParamField path="image.altText" type="string" optional>
+  Accessibility alt text. Defaults to an empty string if omitted.
+</ParamField>
+
+**Returns** `Promise<{ asset: MediaAsset; prodImg: ProductImage }>` — both the newly created media asset row and the product–image join row.
+
+Invalidates the `catalog-all` cache on success.
+
+**Required permission:** `items.manage`
+
+---
+
+## Leads (Internal)
+
+### createLeadWithScore
+
+`src/web/actions/leads.ts` — called internally by `submitWizardData`.
+
+This function is not exported as a standalone public action but is the lead-scoring engine invoked at step 5 of the wizard pipeline. It scores the incoming lead and inserts it into the `leads` table with a `risk_level` and numeric `score`.
+
+**Scoring factors:**
+
+| Signal | Source | Impact |
+|---|---|---|
+| Email domain | `email` field | Corporate domains score higher than public providers (Gmail, Hotmail, etc.) |
+| Job title seniority | `cargo` field | C-level and director titles score higher |
+| Urgency | `urgencia` field | `alta` scores highest, `baja` lowest |
+
+The resulting `risk_level` is one of `CALIENTE` (hot), `TIBIO` (warm), `FRIO` (cold), or `SPAM`. The lead is created using the anon public client and goes through RLS policies, with `status` defaulting to `"NUEVO"`.
+
+---
+
+## Branding
+
+`src/web/actions/branding.ts`
+
+### getTenantBranding
+
+```typescript
+getTenantBranding(tenantCode?: string | null): Promise<BrandingConfig>
+```
+
+Returns the full consolidated branding configuration for the tenant by reading settings from modules `EMPRESA`, `LOCALIZACION`, `IDENTIDAD`, and `DOCUMENTOS` in `tenant_settings`. Values from the database are merged on top of the hardcoded `getBrandingDefaults(tenantCode)` so that any key not yet saved in the database still returns a sensible default.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<BrandingConfig>` — complete branding config object. Falls back to `getBrandingDefaults` on Supabase error.
+
+---
+
+### saveTenantBranding
+
+```typescript
+saveTenantBranding(
+  tenantCode: string | null,
+  data: Partial<BrandingConfig>,
+  versionDescription?: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Saves one or more branding keys by performing a bulk upsert into `tenant_settings` and creating a full configuration snapshot in `tenant_branding_version`. Every successful save increments the version number.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="data" type="Partial<BrandingConfig>" required>
+  Partial branding config with only the keys to update. Routing to the correct `module` is automatic based on the key name.
+</ParamField>
+
+<ParamField path="versionDescription" type="string" optional>
+  Human-readable description for the version snapshot. Defaults to `"Actualización de Branding (Versión N)"`.
+</ParamField>
+
+**Required permission:** `branding.manage`
+
+---
+
+### getBrandingHistory
+
+```typescript
+getBrandingHistory(tenantCode?: string | null): Promise<BrandingVersion[]>
+```
+
+Returns all historical branding version snapshots for the tenant, ordered by version number descending (newest first).
+
+**Returns** `Promise<BrandingVersion[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Version UUID |
+| `version_number` | `number` | Sequential version number |
+| `config_values` | `BrandingConfig` | Full configuration snapshot at time of save |
+| `description` | `string` | Human-readable change description |
+| `created_at` | `string` | ISO timestamp |
+
+---
+
+### restoreBrandingVersion
+
+```typescript
+restoreBrandingVersion(
+  tenantCode: string | null,
+  versionId: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Restores a historical branding version by re-upserting all its `config_values` into `tenant_settings` and creating a new version snapshot with a description of `"Restaurado a la Versión N"`.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="versionId" type="string" required>
+  UUID of the `tenant_branding_version` row to restore.
+</ParamField>
+
+**Required permission:** `branding.manage`
+
+---
+
+### uploadBrandingLogo
+
+```typescript
+uploadBrandingLogo(
+  tenantCode: string | null,
+  fileType: string,
+  base64Data: string,
+  fileName: string,
+  mimeType: string
+): Promise<{ success: boolean; url?: string; error?: string }>
+```
+
+Uploads a branding image (logo, favicon, etc.) to the `tenant-logos` Supabase Storage bucket and returns its public URL. Creates the bucket if it does not yet exist.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="fileType" type="string" required>
+  Logical file type label used to construct the storage path (e.g. `"logo_url"`, `"favicon_url"`). The final path is `{tenantId}/{fileType}-{timestamp}.{ext}`.
+</ParamField>
+
+<ParamField path="base64Data" type="string" required>
+  Base64-encoded file content. Decoded to a `Buffer` before uploading.
+</ParamField>
+
+<ParamField path="fileName" type="string" required>
+  Original file name used to derive the extension.
+</ParamField>
+
+<ParamField path="mimeType" type="string" required>
+  MIME type of the image (e.g. `"image/png"`, `"image/svg+xml"`). Allowed: `image/png`, `image/jpeg`, `image/svg+xml`, `image/gif`, `image/x-icon`, `image/vnd.microsoft.icon`. Maximum file size: **2 MB**.
+</ParamField>
+
+**Returns** `Promise<{ success: boolean; url?: string; error?: string }>`. On success, `url` contains the publicly accessible URL from Supabase Storage.
+
+**Required permission:** `branding.manage`
+
+---
+
+### getPublicBranding
+
+```typescript
+getPublicBranding(tenantCode?: string | null): Promise<BrandingConfig>
+```
+
+Convenience alias for `getTenantBranding`. Used in public-facing pages and middleware that need branding data without an authenticated session context. Internally calls `getTenantBranding` with the same arguments.

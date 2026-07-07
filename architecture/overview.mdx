@@ -1,0 +1,85 @@
+---
+title: "ERP B2B Premium Architecture: Bounded Contexts and Data Flow"
+sidebarTitle: "Overview"
+description: "How ERP B2B Premium structures its codebase into bounded contexts, how the middleware routes requests, and how public and ERP layers interact."
+---
+
+ERP B2B Premium is divided into two bounded contexts: the **public web layer** (`src/web/`) handles marketing, lead generation, and the wizard funnel — all of which are accessible without authentication. The **authenticated ERP layer** (`src/erp/`) contains the dashboard, CRM, inventory, billing, and operations modules, accessible only to verified tenant users. Both contexts share a common **platform layer** (`src/platform/`) that owns auth client factories, tenant resolution, and the middleware dispatcher.
+
+## Bounded Context Diagram
+
+Every browser request flows through `middleware.ts`, which calls `middlewareDispatcher()`. The dispatcher inspects the pathname and hands off the request to the appropriate guard. Unrecognized public paths are passed through without modification.
+
+```
+Browser Request
+     |
+middleware.ts → middlewareDispatcher()
+     |______ /portal      → portalMiddlewareGuard()
+     |______ /dashboard   → erpMiddlewareGuard()
+     |______ /login       → authMiddlewareGuard()
+     |______ /recovery    → authMiddlewareGuard()
+     |______ /reset-password → authMiddlewareGuard()
+     |______ /            → NextResponse.next()  (public)
+```
+
+## Platform Layer (`src/platform/`)
+
+The platform layer is the only place that holds cross-cutting infrastructure. Nothing in `src/web/` or `src/erp/` re-implements auth or tenant logic — they always import from `src/platform/`.
+
+| Module | File | Responsibility |
+|--------|------|---------------|
+| Auth clients | `auth/clients.ts` | Four Supabase client factories (see below) |
+| Middleware dispatcher | `middleware/dispatcher.ts` | Routes requests to the correct guard |
+| Tenant resolver | `tenant/tenant-resolver.ts` | Resolves tenant code → UUID via static map + dynamic DB cache |
+| Server guards | `auth/server-guards.ts` | `requireAction()`, `getAuthContext()`, `validateTenantAccess()` |
+
+### Supabase Client Factories (`auth/clients.ts`)
+
+Four distinct clients are exported, each with a well-defined scope and credential set:
+
+| Factory | Key used | Session | Purpose |
+|---------|----------|---------|---------|
+| `getErpBrowserClient()` | Anon key | Persisted (`sb-erp-local`) | ERP dashboard browser interactions |
+| `getPortalBrowserClient()` | Anon key | Persisted (`sb-portal-local`) | Customer portal browser interactions |
+| `getPublicServerClient()` | Anon key | None (stateless) | Public Server Actions — wizard, catalog |
+| `getSupabaseAdmin()` | Service role key | None (stateless) | RLS bypass — migrations, seeds, admin ops |
+
+`getErpBrowserClient()` and `getPortalBrowserClient()` use separate storage keys so ERP staff and portal customers never share a session cookie, even on the same origin. `getSupabaseAdmin()` is lazily initialized and throws immediately if `SUPABASE_SERVICE_ROLE_KEY` is absent, preventing silent permission escalation.
+
+## Public Web Data Flow
+
+The public site's primary conversion path is the pre-engineering wizard. When a visitor completes the wizard and submits, `submitWizardData()` in `src/web/actions/wizard.ts` orchestrates the following sequence:
+
+```
+Landing Page → Wizard Form → submitWizardData()
+                               ├── calculateRequiredCfm()  (src/utils/engineering.ts)
+                               ├── estimatePrice()         (src/utils/pricing.ts)
+                               ├── Client upsert           (clients table)
+                               ├── Contact upsert          (client_contacts table)
+                               ├── Lead + Score            (leads table)
+                               └── Diagnostic Report       (diagnostic_reports table)
+```
+
+All database writes in this flow use `getPublicServerClient()` (anon key + RLS), never the admin client. The RLS `INSERT` policies for `anon` act as the final data boundary for each table.
+
+## ERP Layer (`src/erp/`)
+
+Server Actions in `src/erp/actions/` follow a strict two-gate pattern before touching Supabase:
+
+1. **`requireAction(permission)`** — verifies the caller holds the required RBAC permission (e.g. `clients.create`, `invoices.manage`). Throws if the session is absent or the role is insufficient.
+2. **`validateTenantAccess(userId, role, tenantId)`** — confirms the authenticated user belongs to the requested tenant, preventing cross-tenant data access even for valid sessions.
+
+Only after both checks pass does the action query Supabase. Most ERP read actions also call `getAuthContext()` first to obtain `userId` and `role` without throwing, allowing richer error messaging before delegating to the guards.
+
+## Fail-Closed Middleware
+
+The dispatcher wraps its entire routing logic in a `try/catch`. If any unhandled error occurs — a guard throwing, a missing import, or a transient runtime error — the dispatcher **redirects the request to `/error?code=middleware_failure`** rather than calling `NextResponse.next()`. This fail-closed design guarantees that a broken guard can never silently allow an unauthenticated request through to a protected route.
+
+```ts
+// src/platform/middleware/dispatcher.ts (simplified)
+} catch (error) {
+  console.error('[dispatcher] Error no capturado en middleware:', error);
+  // Fail-closed: denegar acceso por defecto
+  return NextResponse.redirect(new URL('/error?code=middleware_failure', request.url));
+}
+```

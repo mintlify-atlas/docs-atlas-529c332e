@@ -1,0 +1,110 @@
+---
+title: "CRM: Client Management and Lead Pipeline in the ERP"
+sidebarTitle: "Clients & Leads"
+description: "Manage B2B clients, track the full lead lifecycle from NUEVO to CONVERTIDO, and view diagnostic reports linked to each lead in ERP B2B Premium."
+---
+
+The CRM module manages B2B clients and their associated leads, contacts, and diagnostic reports. Clients are created either manually via the ERP or automatically when a prospect submits the public wizard. All records are scoped to the authenticated user's tenant and filtered by `tenant_id` at the query level.
+
+## Client lifecycle
+
+Clients move through the following states:
+
+```
+PROSPECTO → ACTIVO → INACTIVO / SUSPENDIDO
+```
+
+The status is stored in the `clients` table and drives visibility in collection reports and invoice generation. Only `ACTIVO` clients appear in invoice dropdowns by default.
+
+## `getClients(tenantCode?)` → `ClientListItem[]`
+
+Returns the full client list for the tenant. Each item includes a `totalInvoiced` amount computed from non-voided invoices (`EMITIDA`, `PARCIALMENTE_PAGADA`, and `PAGADA` statuses only).
+
+```typescript
+interface ClientListItem {
+  id: string;
+  taxId: string;
+  name: string;           // legal_name
+  segment: string;        // industry
+  totalInvoiced: number;  // sum of EMITIDA + PARCIALMENTE_PAGADA + PAGADA invoices
+  status: "ACTIVO" | "SUSPENDIDO" | "PENDIENTE";
+}
+```
+
+`INACTIVO` clients are mapped to `"SUSPENDIDO"` in the returned shape; everything else that is not `ACTIVO` maps to `"PENDIENTE"`.
+
+## `createClient(tenantCode, clientData)`
+
+Requires the `clients.create` action permission (enforced via `requireAction` on the server). Before inserting, it checks for a duplicate `tax_id` within the same tenant and throws `"Ya existe un cliente con este NIT para este tenant."` if one is found.
+
+```typescript
+createClient(tenantCode: string | null, clientData: {
+  taxId: string;
+  name: string;
+  segment: string;
+  email: string;
+})
+```
+
+New clients are inserted with `client_type: "Empresa"` and `status: "ACTIVO"` by default. The `assigned_user_id` is resolved to the tenant owner user via `resolveTenantOwnerUserIdAsync`.
+
+## Lead lifecycle
+
+| Status | Description |
+|---|---|
+| `NUEVO` | Just captured from the public wizard or manual entry |
+| `EN_SEGUIMIENTO` | Being followed up by the sales team |
+| `CALIFICADO` | Qualified — ready for quote creation |
+| `RECHAZADO` | Disqualified — will not convert |
+| `CONVERTIDO` | Won — converted to an active client or requirement |
+
+## `getLeads(tenantCode?)` → `LeadRow[]`
+
+Fetches up to 200 leads ordered by `created_at` descending. Each row joins the related `client`, `contact`, and `diagnostic_reports` record.
+
+```typescript
+interface LeadRow {
+  id: string;
+  lead_code: string;
+  risk_level: "CALIENTE" | "TIBIO" | "FRIO" | "SPAM";
+  score: number;
+  status: string;
+  lead_source: string | null;
+  notes: string | null;
+  created_at: string;
+  assigned_user_id: string | null;
+  client: { legal_name: string; city: string | null } | null;
+  contact: { first_name: string; last_name: string; email: string | null; phone: string | null } | null;
+  diagnostic: DiagnosticReport | null;
+}
+```
+
+The `diagnostic` field contains the linked `diagnostic_reports` row if the lead came through the public wizard, including `calculated_cfm`, `cfm_category`, estimated price range in COP, and spatial dimensions.
+
+## `updateLeadStatus(leadId, newStatus)`
+
+Requires the `leads` action permission. Accepts any of the five valid statuses from the lifecycle table above.
+
+```typescript
+updateLeadStatus(
+  leadId: string,
+  newStatus: "NUEVO" | "EN_SEGUIMIENTO" | "CALIFICADO" | "RECHAZADO" | "CONVERTIDO"
+): Promise<void>
+```
+
+## Risk level scoring
+
+The `risk_level` field on each lead is assigned at capture time based on the contact's email domain and job title:
+
+| Level | Assignment Logic |
+|---|---|
+| `CALIENTE` | Corporate email domain **and** decision-maker title (Director, Gerente) |
+| `TIBIO` | Standard corporate email, no decision-maker title |
+| `FRIO` | Unknown cargo or mid-range public email provider |
+| `SPAM` | Public email domain (gmail, hotmail, etc.) or no cargo |
+
+`CALIENTE` leads surface in the `comercial` dashboard queue and generate `NotificationItem` entries with `isDanger: false` for the commercial team's bell.
+
+<Note>
+Leads created through the public wizard are automatically upserted — if a client with the same `legal_name` already exists in the tenant, their contact record is reused rather than duplicated. This prevents ghost clients in the CRM and keeps the contact timeline intact.
+</Note>

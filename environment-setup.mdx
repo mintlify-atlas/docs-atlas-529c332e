@@ -1,0 +1,123 @@
+---
+title: "Configure Environments for Dev, Staging, and Production"
+sidebarTitle: "Environment Setup"
+description: "Complete reference for all environment variables in ERP B2B Premium and how to manage dev, staging, and production Supabase projects."
+---
+
+Next.js loads `.env.*` files automatically based on the current run mode. ERP B2B Premium extends this convention with three explicitly scoped files: **`.env.local`** for local development, **`.env.staging`** for the staging environment (loaded manually), and **`.env.production`** for production builds. Each file points to a completely separate Supabase project so that development, QA, and production data never mix.
+
+## Environment Files
+
+| File | Purpose | Loaded by |
+|------|---------|----------|
+| `.env.local` | Local development | `next dev` — loaded automatically, **git-ignored** |
+| `.env.staging` | Staging | Manual: `dotenv -e .env.staging -- next dev` |
+| `.env.production` | Production | `next start` / `next build` |
+| `.env.test` | Tests / CI | `NODE_ENV=test` |
+
+`.env.local` always takes precedence over `.env` and is intentionally excluded from version control — never commit secrets to the repository.
+
+## Quick Setup Scripts
+
+Use the bundled setup script to copy the correct template into `.env.local` for each environment:
+
+<CodeGroup>
+```bash Development
+npx ts-node scripts/setup-env.ts dev
+```
+
+```bash Staging
+npx ts-node scripts/setup-env.ts staging
+```
+
+```bash Production
+npx ts-node scripts/setup-env.ts production
+```
+</CodeGroup>
+
+Each command copies the appropriate environment template into `.env.local`, which Next.js picks up automatically on the next `npm run dev` or `npm run build`.
+
+## Environment Variable Reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXT_PUBLIC_SUPABASE_URL` | **Yes** | Supabase project URL — exposed to the browser via the `NEXT_PUBLIC_` prefix (e.g. `https://abc123.supabase.co`) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **Yes** | Supabase anonymous key — safe to expose to the client because all data access is protected by Row Level Security policies |
+| `NEXT_PUBLIC_DEFAULT_TENANT_CODE` | **Yes** | Default tenant slug used by the tenant resolver when no explicit tenant context is present (e.g. `acme`) |
+| `SUPABASE_URL` | Server only | Server-side Supabase URL — used by Server Components and Server Actions; never sent to the browser |
+| `SUPABASE_ANON_KEY` | Server only | Server-side anonymous key for server-to-Supabase calls that should respect RLS |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server only | **Bypasses all RLS policies** — restrict to migration scripts and admin seed operations only; **NEVER expose to the client** |
+| `SUPPRESS_TENANT_WARNINGS` | Optional | Set to `true` to silence `[tenant-resolver]` unknown-tenant warnings in CI or test environments |
+
+## Multi-environment Supabase Configuration
+
+Each environment must point to a **separate Supabase project** to prevent data cross-contamination. Update the three files with the credentials from each project's dashboard (**Project Settings → API**):
+
+<CodeGroup>
+```env .env.local (Development)
+# Supabase local instance or cloud dev project
+NEXT_PUBLIC_SUPABASE_URL=https://localhost:54321
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...local-anon-key
+
+NEXT_PUBLIC_DEFAULT_TENANT_CODE=acme
+
+SUPABASE_URL=https://localhost:54321
+SUPABASE_ANON_KEY=eyJ...local-anon-key
+SUPABASE_SERVICE_ROLE_KEY=eyJ...local-service-role-key
+
+# Optional: suppress unknown-tenant warnings during local testing
+# SUPPRESS_TENANT_WARNINGS=false
+```
+
+```env .env.staging
+# Staging Supabase cloud project
+NEXT_PUBLIC_SUPABASE_URL=https://staging-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...staging-anon-key
+
+NEXT_PUBLIC_DEFAULT_TENANT_CODE=acme
+
+SUPABASE_URL=https://staging-project.supabase.co
+SUPABASE_ANON_KEY=eyJ...staging-anon-key
+SUPABASE_SERVICE_ROLE_KEY=eyJ...staging-service-role-key
+
+SUPPRESS_TENANT_WARNINGS=false
+```
+
+```env .env.production
+# Production Supabase cloud project
+NEXT_PUBLIC_SUPABASE_URL=https://prod-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...prod-anon-key
+
+NEXT_PUBLIC_DEFAULT_TENANT_CODE=acme
+
+SUPABASE_URL=https://prod-project.supabase.co
+SUPABASE_ANON_KEY=eyJ...prod-anon-key
+SUPABASE_SERVICE_ROLE_KEY=eyJ...prod-service-role-key
+
+SUPPRESS_TENANT_WARNINGS=true
+```
+</CodeGroup>
+
+<Warning>
+**`SUPABASE_SERVICE_ROLE_KEY` bypasses Row Level Security entirely.** Only use it inside server-side migration scripts (`scripts/deploy-migrations.ts`) and admin seed operations (`scripts/seed-*.ts`) — never inside Server Actions that read or write user-submitted data. Any Server Action that calls `getSupabaseAdmin()` with user-controlled input creates a privilege escalation risk. Prefer `getPublicServerClient()` (anon key + RLS) in all user-facing Server Actions.
+</Warning>
+
+## CI/CD Environment Variables
+
+The GitHub Actions workflow at `.github/workflows/ci.yml` runs on every push and pull request. It requires the following variables to be configured as **repository secrets** in GitHub (**Settings → Secrets and variables → Actions**):
+
+| Secret name | Maps to |
+|-------------|---------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Staging or CI-dedicated Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous key for the CI project |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key for migration checks in CI |
+| `NEXT_PUBLIC_DEFAULT_TENANT_CODE` | Tenant slug used during automated tests (e.g. `acme`) |
+
+The CI pipeline executes four quality gates on every run:
+
+1. `npx tsc --noEmit` — Zero TypeScript type errors
+2. `npm run lint` — Zero new ESLint violations
+3. `npx vitest run` — All unit tests pass
+4. `npm audit --audit-level=high` — No high-severity CVEs
+
+All four gates must pass before a pull request can be merged into `main`.

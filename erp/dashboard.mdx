@@ -1,0 +1,137 @@
+---
+title: "ERP Dashboard: Role-adaptive KPIs and Operations Command Center"
+sidebarTitle: "Dashboard"
+description: "How the ERP B2B Premium dashboard adapts KPIs and task queues to each user role, and what the command center data includes."
+---
+
+The ERP dashboard (`/dashboard`) is the central operations hub. It shows role-specific KPIs, a real-time task queue, operations health scores, a business events feed, and an audit log — all filtered to the authenticated user's tenant.
+
+## Role-adaptive KPIs
+
+Every user lands on the same `/dashboard` route, but the KPIs, queue title, and notification bell are driven by their assigned role. `getKpisForRole` resolves the authenticated user's role code to one of seven internal categories and fires the matching query set.
+
+| Category | Role Codes | KPIs Shown | Queue Focus |
+|---|---|---|---|
+| admin / director | `SUPER_ADMIN`, `ADMIN_EMPRESA`, `GERENTE_GENERAL`, `DIRECTOR_FINANCIERO` | Facturación Emitida, Recaudo Cartera, Capacidad Activa, Conversión Leads | Overdue invoices |
+| comercial | `DIRECTOR_COMERCIAL`, `EJECUTIVO_COMERCIAL` | Leads Activos, Leads Calientes, Leads Nuevos (mes), Tasa de Conversión | Hot leads |
+| operaciones | `DIRECTOR_OPERACIONES`, `JEFE_PROYECTOS` | OTs Activas, OTs Vencidas, Vencen esta semana, OTs Completadas | Overdue work orders |
+| tecnico | `TECNICO_CAMPO`, `JEFE_MANTENIMIENTO` | OTs Activas, OTs Vencidas, Vencen Hoy, Prioridad Alta | My work orders |
+| almacenista | `ALMACENISTA`, `JEFE_INVENTARIO` | Items Stock Bajo, Items en Stock, Unidades Reservadas, Items OK | Reorder pending |
+| auditor | `AUDITOR` | Eventos (7d), Eventos Críticos (DELETE), Eventos Hoy, Usuarios Únicos | Recent audit events |
+
+## `getKpisForRole(tenantCode)` → `RoleDashboardData`
+
+This is the **preferred action** for the authenticated dashboard view. It calls `getAuthContext()` to resolve the current user's role, validates tenant access, then dispatches to the category-specific query block.
+
+```typescript
+interface RoleDashboardData {
+  kpis: KpiValue[];          // 4 role-specific KPI cards
+  pending: PendingItem[];    // Task queue items
+  queueTitle: string;        // e.g. "Leads por atender"
+  queueSubtitle: string;
+  notificationsTitle: string;
+  notificationsCount: number;
+  notifications?: NotificationItem[];
+}
+
+interface KpiValue {
+  id: string;
+  label: string;
+  value: string;
+  sub?: string;
+  trend?: "up" | "down" | "neutral";
+  variant?: "success" | "info" | "warning" | "danger" | "neutral";
+  link?: string;
+}
+
+interface PendingItem {
+  id: string;
+  description: string;
+  value?: string | null;
+  deadline: string;
+  isOverdue: boolean;
+  link: string;
+}
+```
+
+All seven categories run their queries in a single `Promise.all` over `invoices`, `leads`, `jobs`, `inventory_stock`, `audit_log`, `quotes`, and `requirements` — each filtered by `tenant_id` for multi-tenant isolation.
+
+## `getDashboardCommandCenter(tenantCode)` → `DashboardCommandCenterData`
+
+This action powers the admin-level command center widget. It runs seven parallel Supabase queries and assembles the full operations picture for the tenant.
+
+```typescript
+interface DashboardCommandCenterData {
+  tenantName: string;
+  outstanding: number;        // Total outstanding balance across pending invoices
+  invoiceCount: number;       // Count of pending invoices
+  hasOverdue: boolean;
+  hasDueSoon: boolean;
+  delta: number;              // MoM change in outstanding (e.g. 0.124 = +12.4%)
+  sparkline: number[];        // 30-day sparkline data points
+  kpis: {
+    totalInvoiced: number;
+    totalPayments: number;
+    leadSlaBreachRate: number;
+  };
+  recentEvents: RecentEvent[];
+  auditLog: AuditEntry[];
+  operationsHealth: OperationsHealth;
+  queueTasks: QueueTask[];
+  userName: string;
+}
+```
+
+### Sparkline generation
+
+The 30-element `sparkline` array is generated from the current outstanding balance using a sine wave plus a linear trend, giving a smooth visual representation of the balance curve over the past month.
+
+### KPI computation
+
+`totalInvoiced` and `totalPayments` are calculated by the `calculate_kpi` PostgreSQL RPC (codes `TOTAL_INVOICED` and `TOTAL_PAYMENTS`), stored in `kpi_history` per tenant/period, then fetched back via a join on `kpi_definitions`. If the RPC fails, the action falls back to an in-memory calculation over the raw invoices data.
+
+## Operations health scores
+
+Each of the four areas in `operationsHealth` carries a `score` (0–100) and an `alerts` count. Scores degrade based on live DB state:
+
+| Area | Score Formula | Alerts |
+|---|---|---|
+| `inventory` | `max(0, 100 − lowStockCount × 10)` — decreases by 10 for each SKU with `available_quantity ≤ 10` | Count of low-stock SKUs |
+| `billing` | Collection rate: `(totalPaid / totalInvoiced) × 100` | Count of `VENCIDA` invoices |
+| `crm` | `(convertedLeads / totalLeads) × 100` | Count of `NUEVO` leads awaiting follow-up |
+| `purchases` | `max(0, 100 − pendingCount × 8)` — decreases by 8 for each requirement in `BORRADOR` or `NUEVO` status | Count of unprocessed requirements |
+
+## Command center task queue
+
+`queueTasks` is populated dynamically from live DB queries in priority order:
+
+1. **Overdue invoices** (`status = "VENCIDA"`) — up to 2 tasks, each linking to `/dashboard/invoices`.
+2. **HIGH-priority requirements** in `BORRADOR`, `NUEVO`, or `EN_REVISION` — up to 2 tasks, linking to `/dashboard/requirements`.
+3. **HIGH-priority jobs** in `PENDIENTE` or `EN_EJECUCION` — up to 2 tasks, linking to `/dashboard/jobs`.
+4. **New leads** (`status = "NUEVO"`) — up to 2 tasks for prospect qualification, linking to `/dashboard/leads`.
+
+```typescript
+interface QueueTask {
+  id: string;
+  description: string;
+  value: string | null;   // Formatted COP amount (invoices) or null
+  deadline: string;       // e.g. "Vencido", "Hoy", "24h", "2h"
+  isOverdue: boolean;
+  link: string;
+}
+```
+
+## Notifications
+
+Each role's notification bell (`notifications` array) is populated from contextually relevant live alerts:
+
+| Role Category | Notification Sources |
+|---|---|
+| admin / director | Overdue invoices, low stock, critical/overdue OTs, HIGH-priority requirements |
+| comercial | Hot leads (`risk_level = "CALIENTE"`) not yet converted |
+| operaciones | Critical/overdue OTs, HIGH-priority requirements |
+| tecnico | Critical/overdue OTs assigned to the technician |
+| almacenista | Items with `available_quantity ≤ 10` |
+| auditor | Total audit event count for the past 7 days |
+
+Each `NotificationItem` carries an `isDanger` flag — set to `true` for overdue invoices, voided stock, and overdue OTs — which drives the red/amber badge in the top bar.

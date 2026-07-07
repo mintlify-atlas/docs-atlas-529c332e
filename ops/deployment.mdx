@@ -1,0 +1,167 @@
+---
+title: "Deploying ERP B2B Premium: Vercel, Docker, and Node.js"
+sidebarTitle: "Deployment"
+description: "Step-by-step instructions for deploying ERP B2B Premium to Vercel (recommended), Docker, or a bare Node.js server with all required environment variables."
+---
+
+ERP B2B Premium supports three deployment targets: **Vercel** (recommended for zero-config serverless), **Docker** (for self-hosted VPS or Kubernetes), and **bare Node.js standalone mode**. All three options share the same production build (`npm run build`) and the same set of required environment variables.
+
+## Hardware requirements (production)
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| RAM | 2 GB | 4 GB |
+| CPU | 2 cores | 4 cores |
+| Storage | 20 GB SSD | 40 GB SSD |
+| Node.js | 20.x LTS | 22.x LTS |
+
+<Note>
+The primary performance bottleneck is Supabase (Postgres + storage), not the Next.js frontend. For high-traffic workloads (&gt;10 k req/min) use Vercel Pro or horizontal container scaling.
+</Note>
+
+## Deployment methods
+
+<Tabs>
+  <Tab title="Vercel">
+    Vercel is the zero-configuration path. The `vercel.json` in the repository root pre-configures the framework, region, and security headers.
+
+    <Steps>
+      <Step title="Install the Vercel CLI">
+        ```bash
+        npm i -g vercel
+        ```
+      </Step>
+
+      <Step title="Add environment variables">
+        Run each command and paste the value when prompted:
+
+        ```bash
+        vercel env add NEXT_PUBLIC_SUPABASE_URL
+        vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY
+        vercel env add SUPABASE_SERVICE_ROLE_KEY
+        vercel env add NEXT_PUBLIC_SITE_URL
+        vercel env add NEXT_PUBLIC_DEFAULT_TENANT_CODE
+        ```
+      </Step>
+
+      <Step title="Deploy to production">
+        ```bash
+        vercel --prod
+        ```
+      </Step>
+    </Steps>
+
+    ### vercel.json highlights
+
+    | Setting | Value |
+    |---------|-------|
+    | `framework` | `"nextjs"` |
+    | `regions` | `["iad1"]` (US East — Virginia) |
+    | Build command | `npm run build` |
+    | Install command | `npm install` |
+
+    **Security headers** applied globally to all routes (`/(.*)`):
+
+    | Header | Value |
+    |--------|-------|
+    | `X-Frame-Options` | `DENY` |
+    | `X-Content-Type-Options` | `nosniff` |
+    | `Referrer-Policy` | `strict-origin-when-cross-origin` |
+    | `X-XSS-Protection` | `1; mode=block` |
+
+    <Note>
+      Environment variables in `vercel.json` use the `@` prefix (e.g. `@supabase-url`) to reference Vercel project secrets rather than embedding raw values. This keeps credentials out of the repository.
+    </Note>
+  </Tab>
+
+  <Tab title="Docker">
+    Use Docker for self-hosted VPS deployments or Kubernetes clusters.
+
+    ### Multi-stage Dockerfile overview
+
+    The `Dockerfile` uses three stages to produce a minimal, secure image:
+
+    | Stage | Base image | Purpose |
+    |-------|-----------|---------|
+    | `deps` | `node:22-alpine` | Installs production dependencies only (`npm ci --only=production`) |
+    | `builder` | `node:22-alpine` | Installs all deps and runs `npm run build` |
+    | `runner` | `node:22-alpine` | Copies the compiled standalone output; runs as non-root user |
+
+    **Security:** the `runner` stage creates a `nextjs` system user (uid 1001) in the `nodejs` group and switches to it before starting the process. The container never runs as root.
+
+    ### Build and run
+
+    ```bash
+    # Build the image
+    docker build -t erp-web:latest .
+
+    # Run the container
+    docker run -d \
+      --name erp-web \
+      -p 3000:3000 \
+      --env-file .env.production \
+      erp-web:latest
+    ```
+
+    The application listens on **port 3000** inside the container.
+
+    ### Built-in health check
+
+    The `Dockerfile` registers a Docker health check that polls `/api/health` every 30 seconds:
+
+    ```dockerfile
+    HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+      CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+    ```
+
+    Docker marks the container `unhealthy` after three consecutive failures, enabling orchestrators (Kubernetes, ECS, Compose) to restart it automatically.
+  </Tab>
+
+  <Tab title="Node.js Standalone">
+    Next.js standalone mode bundles the server and its dependencies into `.next/standalone`, eliminating the need for `node_modules` on the target machine.
+
+    ```bash
+    npm run build
+    node .next/standalone/server.js
+    ```
+
+    <Note>
+      Standalone mode does **not** copy static assets automatically. After the build, copy `.next/static` into `.next/standalone/.next/static`, or configure a CDN to serve the `/_next/static/` path from your object storage bucket.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Security headers
+
+All deployment targets should include the headers defined in `vercel.json`. If you are not using Vercel, add equivalent headers in your reverse proxy (Nginx, Caddy, AWS ALB):
+
+```nginx
+# Nginx example
+add_header X-Frame-Options "DENY" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header X-XSS-Protection "1; mode=block" always;
+```
+
+## CI/CD pipeline
+
+The GitHub Actions workflow at `.github/workflows/ci.yml` runs automatically on every push and pull request to `main` / `master`. It executes four quality gates in sequence:
+
+| Step | Command | Purpose |
+|------|---------|---------|
+| 1 | `npx tsc --noEmit` | TypeScript type check — zero type errors required |
+| 2 | `npm run lint` | ESLint — no new lint errors allowed |
+| 3 | `npx vitest run --reporter=verbose` | Unit and integration tests |
+| 4 | `npm audit --audit-level=high` | Security audit — flags `high`+ vulnerabilities |
+
+The CI job uses Node.js 22.x and npm caching to keep runs fast. `npm audit` is configured with `continue-on-error: true` so audit findings are surfaced as warnings rather than blocking merges, but the DevOps team must review and resolve `high`+ findings before each production release.
+
+### Pre-deploy validation script
+
+Before any deployment you can run the local validation script which mirrors the CI gates:
+
+```bash
+bash scripts/deploy.sh
+```
+
+The script verifies that all required environment variables are set, then runs `tsc --noEmit`, `lint`, `vitest run`, and `npm run build` in order. It exits non-zero on the first failure.

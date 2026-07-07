@@ -1,0 +1,67 @@
+---
+title: "Rate Limiter: In-process Request Throttling for Server Actions"
+sidebarTitle: "Rate Limiter"
+description: "How checkRateLimit works in ERP B2B Premium — in-process sliding window rate limiting for Server Actions with configurable identifier, limit, and window."
+---
+
+`checkRateLimit` (`src/lib/utils/rate-limiter.ts`) provides lightweight in-process rate limiting for Server Actions. It uses an in-memory `Map` with a sliding window to track request counts per identifier. It is used in the wizard to prevent form submission abuse.
+
+<Warning>
+  This is an **in-process** rate limiter. In serverless deployments (Vercel), each function instance has its own isolated Map, so the effective rate limit is per-instance, not globally enforced. For global rate limiting, use an edge middleware solution (e.g., Upstash Redis).
+</Warning>
+
+## API Reference
+
+### `checkRateLimit(identifier, maxRequests?, windowMs?)`
+
+```typescript
+checkRateLimit(
+  identifier: string,
+  maxRequests: number = 10,
+  windowMs: number = 60_000
+): { allowed: boolean; remaining: number }
+```
+
+<ParamField path="identifier" type="string" required>
+  Unique key for the rate-limited entity. Typically `"action:email"` or `"action:ip"`. Example: `"wizard:user@company.com"`
+</ParamField>
+
+<ParamField path="maxRequests" type="number">
+  Maximum number of requests allowed in the window. Defaults to `10`.
+</ParamField>
+
+<ParamField path="windowMs" type="number">
+  Window duration in milliseconds. Defaults to `60_000` (1 minute).
+</ParamField>
+
+<ResponseField name="allowed" type="boolean">
+  `true` if the request is within the rate limit; `false` if the limit is exceeded.
+</ResponseField>
+
+<ResponseField name="remaining" type="number">
+  Number of remaining requests in the current window. Returns `0` when the rate limit is exceeded.
+</ResponseField>
+
+## Usage in the Wizard
+
+```typescript
+import { checkRateLimit } from "@/lib/utils/rate-limiter";
+
+const identifier = `wizard:${rawData.email}`;
+const { allowed } = checkRateLimit(identifier, 10, 60_000);
+if (!allowed) {
+  throw new Error("Demasiadas solicitudes. Intente nuevamente en un minuto.");
+}
+```
+
+## How It Works
+
+Entries are stored internally as `{ count: number; resetAt: number }` in a module-level `Map`.
+
+On each call to `checkRateLimit`:
+
+1. **Window expired** — if no entry exists for the identifier, or if `Date.now() > entry.resetAt`, the entry is reset to `{ count: 1, resetAt: now + windowMs }` and the request is allowed.
+2. **Limit reached** — if `entry.count >= maxRequests`, returns `{ allowed: false, remaining: 0 }` without incrementing the counter.
+3. **Within window** — if the entry is active and below the limit, `count` is incremented and `{ allowed: true, remaining: maxRequests - count }` is returned.
+
+Because the window resets only on the first request after expiry (not on a fixed schedule), the implementation behaves as a **sliding reset** rather than a strict fixed-window counter.

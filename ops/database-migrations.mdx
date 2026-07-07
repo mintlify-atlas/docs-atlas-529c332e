@@ -1,0 +1,187 @@
+---
+title: "Supabase Database Migrations: Workflow and RLS Strategy"
+sidebarTitle: "Migrations"
+description: "How to create, apply, and verify Supabase database migrations in ERP B2B Premium across dev, staging, and production environments."
+---
+
+Database schema changes are managed as SQL migration files in `supabase/migrations/` with UTC timestamps as filenames. There are **no automatic down migrations** — rollbacks are executed manually with reverse SQL statements. Every migration file is reviewed before it reaches production.
+
+## File naming convention
+
+Migration files follow the format `YYYYMMDDHHMMSS_description.sql`:
+
+```
+supabase/migrations/
+  20260621000038_public_rls_policies.sql
+  20260622120000_add_diagnostic_reports.sql
+  20260701090000_leads_scoring_columns.sql
+```
+
+The timestamp prefix guarantees deterministic ordering and prevents filename collisions across parallel branches.
+
+## Applying migrations
+
+<Steps>
+  <Step title="Create the migration file">
+    Add a new `.sql` file in `supabase/migrations/` using the next UTC timestamp as the filename prefix:
+
+    ```bash
+    touch supabase/migrations/$(date -u +%Y%m%d%H%M%S)_your_description.sql
+    ```
+
+    Write your `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, and `CREATE POLICY` statements inside the file.
+  </Step>
+
+  <Step title="Point .env.local at the correct project">
+    Verify that `.env.local` contains the Supabase URL and service-role key for the target environment (local, staging, or production) before executing the migration script.
+
+    ```env
+    NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
+    SUPABASE_SERVICE_ROLE_KEY=eyJ...
+    ```
+  </Step>
+
+  <Step title="Run the migration script">
+    ```bash
+    npx ts-node scripts/deploy-migrations.ts
+    ```
+  </Step>
+
+  <Step title="Verify RLS coverage">
+    After the migration, run the RLS coverage checker to confirm every new table has Row Level Security enabled and policies defined:
+
+    ```bash
+    npx ts-node scripts/check-rls-coverage.ts
+    ```
+  </Step>
+</Steps>
+
+## New table checklist
+
+Every new table **must** satisfy this checklist before its migration file is committed:
+
+<Steps>
+  <Step title="Create the table">
+    ```sql
+    CREATE TABLE public.my_table (
+      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id   uuid NOT NULL REFERENCES public.tenants(id),
+      -- ... other columns
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      updated_at  timestamptz,
+      deleted_at  timestamptz,
+      created_by  uuid REFERENCES auth.users(id)
+    );
+    ```
+  </Step>
+
+  <Step title="Enable Row Level Security">
+    ```sql
+    ALTER TABLE public.my_table ENABLE ROW LEVEL SECURITY;
+    ```
+
+    RLS must be enabled on **every** table in the `public` schema, including lookup/reference tables.
+  </Step>
+
+  <Step title="Create RLS policies">
+    Create policies for the roles that need access. Always scope data access by `tenant_id`:
+
+    ```sql
+    -- Authenticated users: access their own tenant's rows only
+    CREATE POLICY "my_table_authenticated_select"
+      ON public.my_table FOR SELECT
+      TO authenticated
+      USING (tenant_id = (SELECT tenant_id FROM public.user_profiles WHERE id = auth.uid()));
+
+    -- If public/anonymous access is needed (use sparingly)
+    CREATE POLICY "my_table_anon_select"
+      ON public.my_table FOR SELECT
+      TO anon
+      USING (is_public = true);
+    ```
+  </Step>
+
+  <Step title="Add traceability triggers">
+    Attach `updated_at` and `deleted_at` triggers so every row change is auditable:
+
+    ```sql
+    -- Auto-update updated_at on row modification
+    CREATE TRIGGER set_updated_at
+      BEFORE UPDATE ON public.my_table
+      FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+    ```
+  </Step>
+</Steps>
+
+## Migration environments
+
+| Environment | Command | `.env` target |
+|-------------|---------|---------------|
+| Development | `npx ts-node scripts/deploy-migrations.ts` | `.env.local` → local Supabase |
+| Staging | `npx ts-node scripts/deploy-migrations.ts` | `.env.local` → staging project |
+| Production | Manual SQL review + `deploy-migrations.ts` | `.env.local` → prod project |
+
+Each environment must point to a **separate** Supabase project to avoid accidental data cross-contamination. Use `npx ts-node scripts/setup-env.ts <env>` to quickly switch `.env.local` between targets.
+
+<Warning>
+Always review migration SQL manually before running against production. The project does **not** use down migrations — an incorrect migration requires a hand-written rollback SQL statement. There is no automated undo path.
+</Warning>
+
+## Rollback SQL reference
+
+Use these patterns to reverse common migration types directly in the Supabase Dashboard SQL Editor:
+
+```sql
+-- Simple table rollback
+DROP TABLE IF EXISTS public.mi_nueva_tabla CASCADE;
+
+-- Column rollback
+ALTER TABLE public.mi_tabla DROP COLUMN IF EXISTS mi_columna;
+
+-- Policy rollback
+DROP POLICY IF EXISTS mi_policy ON public.mi_tabla;
+
+-- Index rollback
+DROP INDEX IF EXISTS idx_mi_tabla_mi_columna;
+```
+
+## Production checklist
+
+Run through this checklist for every migration that targets the production Supabase project:
+
+<Steps>
+  <Step title="Take a manual backup">
+    ```bash
+    pg_dump --schema=public --file=backup_$(date +%Y%m%d).sql
+    ```
+
+    Store the backup file in a secure, off-database location (e.g. an S3 bucket or encrypted volume) with at least 30 days retention.
+  </Step>
+
+  <Step title="Get a second-engineer review">
+    Open a PR or send the migration SQL to a second engineer. Confirm: no destructive changes to existing data, correct RLS policies, and all foreign keys reference valid tables.
+  </Step>
+
+  <Step title="Apply to staging first">
+    Point `.env.local` at the staging project and run:
+
+    ```bash
+    npx ts-node scripts/deploy-migrations.ts
+    ```
+
+    Verify the staging app works end-to-end before proceeding.
+  </Step>
+
+  <Step title="Verify staging health">
+    ```bash
+    npx ts-node scripts/check-rls-coverage.ts && npx vitest run
+    ```
+
+    All tests must pass and RLS coverage must be 100 %.
+  </Step>
+
+  <Step title="Apply to production during a low-traffic window">
+    Switch `.env.local` to the production project and run the migration script. Monitor Supabase logs and the `/api/health?full=true` endpoint for the 10 minutes following the migration.
+  </Step>
+</Steps>

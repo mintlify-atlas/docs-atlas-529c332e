@@ -1,0 +1,80 @@
+---
+title: "Work Orders: Field Operations and Job Tracking"
+sidebarTitle: "Work Orders"
+description: "Create, assign, and track field work orders (OTs) in ERP B2B Premium, from PENDIENTE through COMPLETADA with priority-based queue management."
+---
+
+Work orders (jobs / OTs) represent field operations — installations, maintenance visits, repairs, and assembly tasks. Each job has a sequential code (`JOB-2026-NNN`), an assigned technician, a priority level, planned start and end dates, and a lifecycle status. Jobs feed directly into the `operaciones` and `tecnico` dashboard views.
+
+## Job statuses
+
+| Status | Description |
+|---|---|
+| `PENDIENTE` | Scheduled — not yet started |
+| `EN_PROGRESO` | Field work currently in progress (`EN_EJECUCION` in the DB, normalized on read) |
+| `COMPLETADA` | Work completed |
+| `CANCELADA` | Cancelled |
+
+## Priority levels
+
+Three priority levels are supported: `ALTA` (HIGH), `MEDIA` (MEDIUM), and `BAJA` (LOW). Priority values are stored in the database as English codes (`HIGH`, `MEDIUM`, `LOW`) and normalized to Spanish on read.
+
+- **ALTA** jobs appear in the command center task queue (`queueTasks`) and generate `NotificationItem` entries for operations and technician roles.
+- **ALTA** jobs count toward the `operationsHealth.billing.alerts` metric if they are also overdue.
+
+## `getJobs(tenantCode?)` → job list
+
+Returns all jobs for the tenant ordered by `created_at` descending. DB values are normalized before returning:
+
+```typescript
+{
+  id: string;
+  code: string;          // e.g. "JOB-2026-001"
+  description: string;   // job title
+  assignedTech: string;
+  priority: "BAJA" | "MEDIA" | "ALTA";
+  startDate: string;     // YYYY-MM-DD
+  endDate: string;       // YYYY-MM-DD
+  status: "PENDIENTE" | "EN_PROGRESO" | "COMPLETADA" | "CANCELADA";
+}
+```
+
+The `assignedTech` field is resolved from the tenant's branding defaults (short company name) rather than a separate user join — it is a display label, not a UUID reference.
+
+## `createJob(tenantCode, jobData)`
+
+Requires the `jobs.create` action permission (enforced via `requireAction`). The sequential `JOB-YYYY-NNN` code is auto-generated from a `COUNT` query on the tenant's existing jobs.
+
+```typescript
+createJob(tenantCode: string | null, jobData: {
+  description: string;
+  assignedTech: string;
+  priority: string;   // "ALTA" | "MEDIA" | "BAJA"
+  startDate: string;  // YYYY-MM-DD
+  endDate: string;    // YYYY-MM-DD
+})
+```
+
+Priority strings are mapped back to DB values on insert: `"ALTA"` → `"HIGH"`, `"BAJA"` → `"LOW"`, anything else → `"MEDIUM"`.
+
+The job is always created with `status: "PENDIENTE"`. The `created_by` and `assigned_user_id` fields are both resolved to the tenant owner user.
+
+## Dashboard integration
+
+Jobs feed into two role dashboards:
+
+**operaciones** (`DIRECTOR_OPERACIONES`, `JEFE_PROYECTOS`):
+- `OTs Activas` — count of `PENDIENTE | EN_EJECUCION | EN_PROGRESO`
+- `OTs Vencidas` — count where `planned_end_date < today` and not completed/cancelled
+- `Vencen esta semana` — count where `planned_end_date` falls within the next 7 days
+- `OTs Completadas` — count of `COMPLETADA`
+
+**tecnico** (`TECNICO_CAMPO`, `JEFE_MANTENIMIENTO`):
+- `OTs Activas` — same active count
+- `OTs Vencidas` — overdue count
+- `Vencen Hoy` — count where `planned_end_date = today`
+- `Prioridad Alta` — count of active jobs with `priority = "HIGH"`
+
+<Warning>
+`createJob` requires at least one client and one requirement to exist in the tenant — the `jobs` table has foreign key constraints on both `client_id` and `requirement_id`. The action automatically queries for the first available client and requirement in the tenant and uses their IDs. If neither exists, the insert will fail. Always seed a client and at least one requirement before creating jobs in a fresh tenant.
+</Warning>

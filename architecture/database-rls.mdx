@@ -1,0 +1,85 @@
+---
+title: "Row Level Security: Database-enforced Tenant Isolation"
+sidebarTitle: "Database RLS"
+description: "How Supabase Row Level Security policies enforce tenant isolation and anonymous access for the public site in ERP B2B Premium."
+---
+
+Row Level Security (RLS) is the **second line of defense** after application-layer tenant checking. Even if a bug in a Server Action bypasses `validateTenantAccess()`, the database itself will reject any query that violates the row's policy. Every table in the `public` schema has `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` applied. Policies are organized into two tiers by Postgres role: `anon` for the public site and `authenticated` for the ERP dashboard.
+
+## Two Policy Tiers
+
+### Tier 1 — Anonymous Policies (migration `20260621000038`)
+
+Migration `20260621000038_public_rls_policies.sql` grants the minimum access the public site needs to function: read-only access to catalog and branding tables, and write-only `INSERT` access to the four tables that the lead-generation wizard writes to. No `UPDATE` or `DELETE` is ever granted to the `anon` role.
+
+### Tier 2 — Authenticated Policies (migration `20260622000039`)
+
+Migration `20260622000039_rls_authenticated_policies.sql` restricts all table access for the `authenticated` role to rows that satisfy either of two conditions:
+
+- The row's `tenant_id` matches the tenant UUID embedded in the user's JWT: `tenant_id = (auth.jwt() ->> 'tenant_id')::uuid`
+- The user is a platform super-admin: `is_platform_super_admin()`
+
+This pattern is applied uniformly across all tenant-scoped tables — clients, contacts, leads, jobs, invoices, inventory, audit logs, and more.
+
+## Tables with Anonymous Read / Write Policies
+
+| Table | Anonymous Policy | Purpose |
+|-------|-----------------|---------|
+| `product_categories` | SELECT | Public catalog |
+| `product_subcategories` | SELECT | Public catalog |
+| `product_families` | SELECT | Public catalog |
+| `product_series` | SELECT | Public catalog |
+| `products` | SELECT (status = `'ACTIVO'`) | Public catalog |
+| `product_specifications` | SELECT | Product specs |
+| `product_images` | SELECT | Product media |
+| `product_documents` | SELECT | Product docs |
+| `product_files` | SELECT | CAD files |
+| `media_assets` | SELECT | All media |
+| `seo_metadata` | SELECT | Product SEO |
+| `tenant_settings` | SELECT (`is_public = true`) | Public branding |
+| `leads` | INSERT | Wizard lead capture |
+| `clients` | INSERT | Wizard client upsert |
+| `client_contacts` | INSERT | Wizard contact upsert |
+| `diagnostic_reports` | INSERT | Wizard diagnostics |
+
+## Authenticated Policy Example
+
+The following policy from migration `20260622000039` is representative of every authenticated policy in the system. The same `USING` and `WITH CHECK` expressions are applied to `SELECT`, `INSERT`, `UPDATE`, and `DELETE` via a single `FOR ALL` policy per table, plus an explicit `FOR SELECT` policy where separate read/write granularity is needed:
+
+```sql
+CREATE POLICY clients_select_tenant ON public.clients
+  FOR SELECT TO authenticated
+  USING (
+    tenant_id = (auth.jwt() ->> 'tenant_id')::uuid
+    OR is_platform_super_admin()
+  );
+```
+
+The JWT claim `tenant_id` is injected by Supabase Auth at sign-in time from the `users` table. This means a user can never access a row from a different tenant, even if they somehow obtain a valid access token for another tenant — the database will reject the query before it returns any data.
+
+## `supabaseAdmin` vs. `getPublicServerClient()`
+
+| Client | Key | RLS applied? | Appropriate for |
+|--------|-----|:---:|----------------|
+| `getPublicServerClient()` | `SUPABASE_ANON_KEY` | ✅ Yes | Wizard Server Actions, public catalog reads |
+| `getSupabaseAdmin()` | `SUPABASE_SERVICE_ROLE_KEY` | ❌ No (bypasses RLS) | Database migrations, seed scripts, platform admin operations |
+
+`getSupabaseAdmin()` is initialized lazily — it throws `Error: SUPABASE_SERVICE_ROLE_KEY no está configurada` if the environment variable is absent. This prevents silent permission escalation in environments where the service key is intentionally not set (e.g. preview deployments).
+
+<Warning>
+  Never call `getSupabaseAdmin()` inside Server Actions that process user-submitted data. Use `getPublicServerClient()` so the anonymous RLS policies act as the final data boundary for wizard and public-form submissions. Calling `getSupabaseAdmin()` in user-facing code would silently bypass every RLS policy and expose all tenant data to the logic running in that action.
+</Warning>
+
+## Verifying RLS Coverage
+
+After adding a new table or migration, verify that every table has RLS enabled and that all expected policies are present:
+
+```bash
+# Run the full unit test suite (includes RLS policy assertions)
+npm run test:unit
+
+# Run the dedicated RLS coverage script
+npx ts-node scripts/check-rls-coverage.ts
+```
+
+`check-rls-coverage.ts` queries `pg_policies` and `pg_tables` to produce a report of any tables that have RLS disabled or that are missing the expected `anon` / `authenticated` policy pairs. Running this script is also a recommended step in the post-migration verification checklist (`scripts/check-index-collisions.ts` covers index health in the same pass).

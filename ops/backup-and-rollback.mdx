@@ -1,0 +1,161 @@
+---
+title: "Database Backup, Restore, and Rollback Procedures"
+sidebarTitle: "Backup & Rollback"
+description: "How to back up, restore, and roll back the Supabase database in ERP B2B Premium — automatic backups, manual pg_dump, and Point-in-Time Recovery."
+---
+
+ERP B2B Premium uses Supabase Postgres as its database. Automatic daily backups are included in the Supabase Pro plan. For critical migrations or pre-deployment snapshots, **manual `pg_dump` backups are strongly recommended** regardless of plan tier — they give you a deterministic restore point tied to a specific code commit.
+
+## Backup options
+
+| Type | Retention | When |
+|------|-----------|------|
+| Supabase automatic | 7 days | Daily (Pro plan) |
+| Manual `pg_dump` | 30 days | Before each migration |
+| PITR (Point-in-Time Recovery) | 24 h – 7 days | Supabase Pro (continuous) |
+
+## Manual backup with pg_dump
+
+### Full backup (schema + data, excluding audit logs)
+
+```bash
+# Full backup — excludes high-volume audit_logs table for speed
+pg_dump --dbname="$SUPABASE_DATABASE_URL" \
+  --schema=public \
+  --exclude-table-data='audit_logs' \
+  --file=backup_$(date +%Y%m%d).sql
+```
+
+### Schema-only backup (for version control)
+
+```bash
+# Schema-only — useful for diffing schema changes between releases
+pg_dump --dbname="$SUPABASE_DATABASE_URL" \
+  --schema=public \
+  --schema-only \
+  --file=schema_$(date +%Y%m%d).sql
+```
+
+Store backup files in a secure off-database location (e.g. an encrypted S3 bucket). Keep manual pre-migration backups for **at least 30 days**.
+
+## Restoring from a backup
+
+### Restore from a pg_dump file
+
+```bash
+psql "$SUPABASE_DATABASE_URL" < backup_20260601.sql
+```
+
+<Warning>
+Restoring a full backup against an existing database will produce duplicate-key errors unless you drop or truncate the affected tables first. Always test restores against a non-production project before executing against production.
+</Warning>
+
+### Point-in-Time Recovery (PITR)
+
+PITR is available on Supabase Pro and lets you restore the database to any second within the retention window:
+
+1. Open the **Supabase Dashboard** for your project.
+2. Navigate to **Settings → Database → Backups**.
+3. Click **Point-in-Time Recovery** and select the target timestamp.
+4. Confirm the restore — Supabase spins up a new instance at that point in time.
+
+PITR retention ranges from 24 hours to 7 days depending on your Supabase plan.
+
+## Code rollback
+
+To revert the last deployed commit without touching the database:
+
+```bash
+git revert HEAD --no-edit
+git push origin main
+```
+
+Vercel and other CI/CD platforms pick up the new commit and redeploy automatically.
+
+## Full rollback (code + database)
+
+Use this procedure when a deployment introduces a breaking migration that must be reversed alongside the code revert.
+
+<Steps>
+  <Step title="Identify the failing commit">
+    ```bash
+    git log --oneline
+    ```
+
+    Note the hash of the commit that introduced the breaking change.
+  </Step>
+
+  <Step title="Revert the code">
+    ```bash
+    git revert <commit-hash> --no-edit
+    git push origin main
+    ```
+
+    This creates a new revert commit rather than rewriting history, preserving auditability.
+  </Step>
+
+  <Step title="Execute reverse SQL in Supabase">
+    Open the **Supabase Dashboard → SQL Editor** for your production project and run the reverse SQL for the migration. Common patterns:
+
+    ```sql
+    -- Drop a newly added table
+    DROP TABLE IF EXISTS public.mi_nueva_tabla CASCADE;
+
+    -- Remove a newly added column
+    ALTER TABLE public.mi_tabla DROP COLUMN IF EXISTS mi_columna;
+
+    -- Remove a newly added policy
+    DROP POLICY IF EXISTS mi_policy ON public.mi_tabla;
+
+    -- Remove a newly added index
+    DROP INDEX IF EXISTS idx_mi_tabla_mi_columna;
+    ```
+  </Step>
+
+  <Step title="Verify RLS coverage">
+    After the reverse SQL runs, confirm that no tables have been left without Row Level Security:
+
+    ```bash
+    npx ts-node scripts/check-rls-coverage.ts
+    ```
+  </Step>
+
+  <Step title="Run the unit test suite">
+    ```bash
+    npx vitest run
+    ```
+
+    All tests must pass before the rollback is considered complete.
+  </Step>
+
+  <Step title="Re-deploy the application">
+    ```bash
+    # Node.js / Docker
+    npm run build && npm start
+
+    # Vercel
+    vercel --prod
+    ```
+  </Step>
+</Steps>
+
+## Post-restore verification
+
+After any restore or rollback — whether from PITR, a `pg_dump` file, or reverse SQL — run the full verification suite:
+
+```bash
+# Check every table has RLS enabled and policies defined
+npx ts-node scripts/check-rls-coverage.ts
+
+# Check for index name collisions (can cause silent migration failures)
+npx ts-node scripts/check-index-collisions.ts
+
+# Run unit and integration tests
+npx vitest run
+```
+
+All three checks must pass before traffic is routed back to the restored instance.
+
+<Warning>
+The project does **not** use automatic down migrations. Always prepare reverse SQL before applying any migration to production, and keep a manual `pg_dump` backup taken within the last hour before running. Without a pre-migration backup, the only recovery path is Supabase PITR, which requires Supabase Pro and may include data written after the migration began.
+</Warning>

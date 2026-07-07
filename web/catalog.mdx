@@ -1,0 +1,221 @@
+---
+title: "Industrial Product Catalog: Hierarchical Category Structure"
+sidebarTitle: "Product Catalog"
+description: "How the public industrial catalog is structured, how to query it, and how to manage products, categories, and media assets in ERP B2B Premium."
+---
+
+The industrial product catalog is publicly accessible (anonymous RLS read access) and organized in a five-level hierarchy. Products carry technical specifications stored as key-value pairs, plus separate collections for images, downloadable documents, CAD files, and SEO metadata. The entire hierarchy is resolved in **two database queries** and cached at the Next.js layer for 60 seconds.
+
+## Category hierarchy
+
+```
+Category
+└── Subcategory
+    └── Family
+        └── Series
+            └── Product (specs, images, documents, CAD files, SEO)
+```
+
+Each level has a unique `*Code` identifier (e.g. `categoryCode`, `seriesCode`) suitable for use in URL slugs and external integrations.
+
+## Fetching the catalog
+
+### `getIndustrialCatalog(tenantCode?)`
+
+**Location:** `src/web/actions/catalog.ts`
+
+Returns the full `CatalogCategory[]` tree for the requested tenant. Internally it:
+
+1. Runs a single deeply-nested Supabase PostgREST query that joins all five levels together with `product_specifications`, `product_images`, `product_documents`, and `product_files`.
+2. Runs a second query against `seo_metadata` for `entity_type = 'PRODUCT'` and builds an in-memory map keyed by `entity_id`.
+3. Maps the raw DB rows to the typed `CatalogCategory[]` structure and attaches SEO data per product.
+
+This approach fetches the **entire catalog in 2 DB round-trips** regardless of catalog size, avoiding the N+1 query problem common with level-by-level fetches.
+
+## TypeScript type hierarchy
+
+```typescript
+interface CatalogCategory {
+  id: string;
+  categoryCode: string;
+  name: string;
+  description: string;
+  subcategories: CatalogSubcategory[];
+}
+
+interface CatalogSubcategory {
+  id: string;
+  subcategoryCode: string;
+  name: string;
+  description: string;
+  families: CatalogFamily[];
+}
+
+interface CatalogFamily {
+  id: string;
+  familyCode: string;
+  name: string;
+  description: string;
+  series: CatalogSeries[];
+}
+
+interface CatalogSeries {
+  id: string;
+  seriesCode: string;
+  name: string;
+  description: string;
+  products: ProductDetail[];
+}
+
+interface ProductDetail {
+  id: string;
+  productCode: string;
+  name: string;
+  description: string;
+  status: string;
+  specifications: Record<string, string>;
+  images: ProductMedia[];
+  documents: ProductMedia[];
+  cadFiles: ProductMedia[];
+  seo?: { metaTitle: string; metaDescription: string; metaKeywords: string; slug: string };
+}
+```
+
+## Media assets
+
+All binary assets (images, documents, CAD files) reference rows in the `media_assets` table via junction tables (`product_images`, `product_documents`, `product_files`). Each asset is represented by `ProductMedia`:
+
+```typescript
+interface ProductMedia {
+  id: string;
+  fileName: string;
+  filePath: string;
+  fileSize: number;
+  mimeType: string;
+  altText: string;
+}
+```
+
+The `filePath` is a Supabase Storage path. Construct the public URL with:
+
+```typescript
+supabase.storage.from("product-assets").getPublicUrl(media.filePath).data.publicUrl
+```
+
+## Caching
+
+`getIndustrialCatalog()` wraps `fetchRawCatalogFromDB()` with Next.js `unstable_cache`:
+
+```typescript
+unstable_cache(
+  async (tenantId: string) => fetchRawCatalogFromDB(tenantId),
+  ["industrial-catalog-key"],
+  {
+    revalidate: 60,          // 60-second TTL
+    tags: ["catalog-all"],   // invalidation tag
+  }
+)
+```
+
+- **TTL:** 60 seconds. After expiry, the next request triggers a background revalidation (stale-while-revalidate semantics).
+- **Invalidation tag:** `catalog-all`. Call `invalidateCatalogCache(tenantCode?)` from `src/web/actions/catalog-cache.ts` to force immediate invalidation via `revalidateTag('catalog-all')`.
+
+<Tip>
+  After any product or category modification, the catalog cache is automatically invalidated — every admin Server Action (`saveProduct`, `deleteProduct`, `saveCategory`, `deleteCategory`, `addProductImage`) calls `invalidateCatalogCache()` as its final step. Manual invalidation is only needed if you modify the database directly.
+</Tip>
+
+## Admin operations
+
+All write operations require the `items.manage` permission, enforced by `requireAction("items.manage")` before any database mutation. The authenticated user's tenant access is then verified with `validateTenantAccess()`.
+
+### Products
+
+| Action | Signature | Notes |
+|---|---|---|
+| Create / update product | `saveProduct(tenantCode, product)` | Replaces all `product_specifications` rows on update |
+| Soft-delete product | `deleteProduct(tenantCode, productId)` | Sets `deleted_at = NOW()` |
+
+```typescript
+// saveProduct — product shape
+{
+  id?: string;           // omit to create; provide to update
+  productCode: string;
+  name: string;
+  description: string;
+  status: string;        // e.g. "ACTIVO"
+  seriesId: string;      // parent series UUID
+  specifications: Record<string, string>;
+}
+```
+
+`saveProduct` performs a full **replace** of specifications: it deletes all existing `product_specifications` rows for the product and re-inserts the new map. This is a destructive operation — pass the complete specification object every time.
+
+### Categories
+
+| Action | Signature | Notes |
+|---|---|---|
+| Create / update category | `saveCategory(tenantCode, category)` | Upserts by `id` |
+| Soft-delete category | `deleteCategory(tenantCode, categoryId)` | Sets `deleted_at = NOW()` |
+
+```typescript
+// saveCategory — category shape
+{
+  id?: string;           // omit to create; provide to update
+  categoryCode: string;
+  name: string;
+  description: string;
+}
+```
+
+### Media assets
+
+```typescript
+addProductImage(
+  tenantCode: string | null,
+  productId: string,
+  image: {
+    fileName: string;
+    filePath: string;   // Supabase Storage path (already uploaded)
+    fileSize: number;
+    mimeType: string;
+    altText?: string;
+  }
+)
+```
+
+`addProductImage` inserts a row into `media_assets` and a corresponding row into `product_images` with a default `sort_order` of `10`. Upload the binary to Supabase Storage first, then call this action to register and link the asset.
+
+## Public access and RLS
+
+The catalog is designed for anonymous read access. Unauthenticated users can browse the full product hierarchy without authentication.
+
+```
+Anonymous user → getIndustrialCatalog() → supabaseAdmin (read)
+                                            ↑
+                           RLS: SELECT allowed for all, no tenant filter needed
+                           (catalog is scoped by tenantId in the query itself)
+```
+
+Any attempt to `INSERT`, `UPDATE`, or `DELETE` from an anonymous context will be rejected by the RLS policies configured on `products`, `product_categories`, and related tables.
+
+## Soft-delete behavior
+
+Deleted products and categories are **not physically removed**. They receive a `deleted_at` timestamp and are excluded from all queries via `.is("deleted_at", null)` filters. This preserves referential integrity for historical orders, leads, and diagnostic reports that reference catalog items.
+
+To permanently purge soft-deleted records, run a manual SQL cleanup against the relevant Supabase project — there is no automated hard-delete mechanism.
+
+## Database tables
+
+| Table | Description |
+|---|---|
+| `product_categories` | Top-level categories |
+| `product_subcategories` | Subcategories, FK → `product_categories` |
+| `product_families` | Families, FK → `product_subcategories` |
+| `product_series` | Series, FK → `product_families` |
+| `products` | Individual products, FK → `product_series` |
+| `product_specifications` | Key-value specs, FK → `products` |
+| `product_images` | Image links, FK → `products` + `media_assets` |
+| `product_documents` | Document links, FK → `products` + `media_assets` |
+| `product_files` | CAD file links, FK → `products` + `media_assets` |
+| `media_assets` | Central asset registry (path, size, MIME type) |
+| `seo_metadata` | SEO fields keyed by `(entity_type, entity_id)` |

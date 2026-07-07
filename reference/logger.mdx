@@ -1,0 +1,106 @@
+---
+title: "Structured Logger: Module-tagged Logging with Pluggable Transport"
+sidebarTitle: "Logger"
+description: "How to use the structured logger in ERP B2B Premium — create module loggers, log at appropriate levels, and plug in external transports like Sentry or Datadog."
+---
+
+The logger (`src/lib/utils/logger.ts`) is a lightweight structured logging utility. In development it prints to the console with level, timestamp, and module tag. In production you replace the transport with Sentry, Datadog, or any external service by calling `setTransport()`.
+
+<Note>
+  Never use `console.error()`, `console.log()`, or similar raw calls in production code. Always use the module logger so logs include the module tag and can be routed to the correct external service.
+</Note>
+
+## API Reference
+
+### `createLogger(module)` — default export
+
+Creates a scoped logger for a given module. Each log call automatically includes the module name, ISO timestamp, and any extra metadata passed as options.
+
+```typescript
+import createLogger from "@/lib/utils/logger";
+
+const logger = createLogger("wizard");
+
+logger.debug("Calculating CFM", { data: { length: 50, width: 30 } });
+logger.info("Lead created", { tenantId: "a0000000-..." });
+logger.warn("Tenant not found, using default", { module: "tenant-resolver" });
+logger.error("Invoice creation failed", { error: new Error("RLS violation") });
+```
+
+---
+
+### Convenience Functions (root logger)
+
+`logError` and `logWarn` are pre-bound to the root `"app"` logger. Use them in utilities or top-level error boundaries where creating a named logger is unnecessary.
+
+```typescript
+import { logError, logWarn } from "@/lib/utils/logger";
+
+logError("Critical error", { error: new Error("...") });
+logWarn("Unexpected state", { data: { key: "value" } });
+```
+
+---
+
+### Child Loggers
+
+Call `.child(subModule)` on any logger to create a namespaced child. The resulting module tag is `"parent:child"`, which makes it easy to filter logs by subsystem.
+
+```typescript
+const logger = createLogger("platform");
+const authLogger = logger.child("auth"); // module = "platform:auth"
+```
+
+---
+
+### `setTransport(fn)` — Custom Transport for Production
+
+Replace the default console transport with any function that accepts a `LogEntry`. Call this once at application startup (e.g., in `instrumentation.ts`).
+
+```typescript
+import { setTransport } from "@/lib/utils/logger";
+import * as Sentry from "@sentry/nextjs";
+
+setTransport((entry) => {
+  if (entry.level === "error") {
+    Sentry.captureException(entry.error ?? new Error(entry.message), {
+      extra: entry.data,
+      tags: { module: entry.module },
+    });
+  }
+  // also write to console in non-prod
+  if (process.env.NODE_ENV !== "production") {
+    console[entry.level](`[${entry.module}] ${entry.message}`, entry.data);
+  }
+});
+```
+
+---
+
+### `LogEntry` Interface
+
+Every call to any logger method constructs and passes a `LogEntry` to the active transport.
+
+```typescript
+interface LogEntry {
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  module: string;
+  timestamp: string;           // ISO 8601
+  data?: Record<string, unknown>;
+  error?: Error;
+  requestId?: string;
+  tenantId?: string;
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level` | `"debug" \| "info" \| "warn" \| "error"` | Severity level |
+| `message` | `string` | Human-readable log message |
+| `module` | `string` | Module tag set in `createLogger()` |
+| `timestamp` | `string` | ISO 8601 timestamp generated at log time |
+| `data` | `Record<string, unknown>` | Optional structured metadata |
+| `error` | `Error` | Optional error object (stack trace included by default transport) |
+| `requestId` | `string` | Optional request correlation ID |
+| `tenantId` | `string` | Optional tenant identifier for multi-tenant tracing |

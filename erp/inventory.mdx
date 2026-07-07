@@ -1,0 +1,107 @@
+---
+title: "Inventory Management: Multi-warehouse Stock and Movements"
+sidebarTitle: "Inventory"
+description: "Track stock levels across multiple warehouses, record entrada/salida/transferencia movements, and manage inventory items in ERP B2B Premium."
+---
+
+The inventory module tracks materials, tools, equipment, consumables, and spare parts (repuestos) across multiple warehouses. Stock is maintained per warehouse/item pair in the `inventory_stock` table and updated atomically via inventory movements. All stock queries are filtered by `tenant_id` for multi-tenant isolation.
+
+## Item types
+
+| Type | Description |
+|---|---|
+| `Material` | Raw or processed material |
+| `Herramienta` | Hand tools and instruments |
+| `Equipo` | Heavy equipment and machinery |
+| `Consumible` | Single-use supplies |
+| `Repuesto` | Spare parts and replacement components |
+
+## `getInventoryStock(tenantCode?)` → stock list
+
+Returns all warehouse/item stock pairs for the tenant, joining `warehouses` and `inventory_items`:
+
+```typescript
+{
+  id: string;            // composite: warehouseId-itemId
+  warehouseCode: string;
+  warehouseName: string;
+  itemCode: string;
+  itemName: string;
+  sku: string;           // same as itemCode
+  category: string;
+  unit: string;          // unit_type from inventory_items
+  quantity: number;
+  reserved: number;
+  available: number;     // quantity - reserved
+}
+```
+
+## `createInventoryMovement(tenantCode, movement)`
+
+Requires the `inventory.movement` action permission. Resolves `itemCode` and warehouse codes to their internal IDs before inserting. Movement codes are auto-generated sequentially (`MOV-2026-NNNN`). Movements are inserted with `status: "Aplicado"` — they take effect immediately.
+
+```typescript
+createInventoryMovement(tenantCode: string | null, movement: {
+  type: "Entrada" | "Salida" | "Transferencia";
+  itemCode: string;
+  quantity: number;
+  notes: string;
+  sourceWarehouse: string;  // warehouse_code
+  destWarehouse?: string;   // warehouse_code (required for Transferencia)
+})
+```
+
+For `Transferencia`, the insert uses `source_warehouse_id` and `destination_warehouse_id`. For `Entrada` and `Salida`, only `warehouse_id` is set.
+
+<Note>
+**Stock validation rules:**
+
+- `Salida` and `Transferencia` movements check `available_quantity >= movement.quantity` before processing. If the check fails, the action throws `"Stock insuficiente en bodega origen. Disponible: X, Requerido: Y"`.
+- `Entrada` movements have no stock floor — you can always add stock.
+- Movement codes follow the format `MOV-YYYY-NNNN` (zero-padded to 4 digits), generated from a `COUNT` query on `inventory_movements` scoped to the tenant.
+</Note>
+
+## `createInventoryItem(tenantCode, itemData)`
+
+Creates a new inventory item definition and, optionally, an initial stock entry and `Entrada` movement in the specified warehouse.
+
+```typescript
+createInventoryItem(tenantCode: string | null, itemData: {
+  itemCode: string;
+  name: string;
+  description: string;
+  category: string;
+  itemType: "Material" | "Herramienta" | "Equipo" | "Consumible" | "Repuesto";
+  unit: string;
+  minimumStock: number;
+  maximumStock: number;
+  reorderPoint: number;
+  initialQuantity?: number;   // if provided, creates initial stock row + Entrada movement
+  warehouseId?: string;       // required if initialQuantity is set
+})
+```
+
+If `initialQuantity` is provided along with `warehouseId`, the action:
+1. Upserts an `inventory_stock` row (on conflict: `tenant_id, warehouse_id, item_id`).
+2. Inserts an `Entrada` movement with `notes: "Carga inicial de inventario"`.
+
+## `getWarehouses(tenantCode?)` → warehouse list
+
+Returns all active (non-deleted) warehouses for the tenant:
+
+```typescript
+{
+  id: string;
+  name: string;
+  code: string;   // warehouse_code
+}
+```
+
+Use `code` values as `sourceWarehouse` / `destWarehouse` when calling `createInventoryMovement`.
+
+## Low stock alerts
+
+Items with `available_quantity ≤ 10` are flagged across the ERP:
+
+- **`almacenista` dashboard**: appear in both the notification bell (`notifications` array with `isDanger: quantity <= 0`) and the pending queue (`"Reordenar <name> (<code>)"`).
+- **Operations health score**: each low-stock SKU reduces the `inventory` health score by 10 points (`max(0, 100 − count × 10)`), surfaced in the admin command center.

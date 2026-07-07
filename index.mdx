@@ -1,20 +1,77 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "ERP B2B Premium: Multi-tenant Industrial ERP with Next.js & Supabase"
+sidebarTitle: "Home"
+description: "ERP B2B Premium is a modular, multi-tenant B2B ERP platform with CRM, inventory, invoicing, and a public pre-engineering wizard built on Next.js and Supabase."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+ERP B2B Premium is a production-ready, multi-tenant B2B ERP platform for industrial services companies. It ships with a public-facing marketing site and lead-generation wizard, a full ERP dashboard covering CRM, work orders, inventory, and invoicing, plus white-label branding per tenant — all enforced by Supabase Row Level Security at the database level.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Understand the platform architecture, key features, and tech stack before you start.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, configure environment variables, and run the app locally in minutes.
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Bounded contexts, multi-tenancy strategy, and how the public and ERP layers interact.
+  </Card>
+  <Card title="Environment Setup" icon="gear" href="/environment-setup">
+    Full reference for all environment variables across dev, staging, and production.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## Explore by Area
+
+<CardGroup cols={3}>
+  <Card title="Lead Wizard" icon="wand-magic-sparkles" href="/web/wizard">
+    5-step pre-engineering funnel that auto-calculates CFM and creates CRM records.
+  </Card>
+  <Card title="Product Catalog" icon="boxes-stacked" href="/web/catalog">
+    Public industrial catalog with hierarchical categories and technical specs.
+  </Card>
+  <Card title="ERP Dashboard" icon="gauge-high" href="/erp/dashboard">
+    Role-adaptive KPIs, audit log, and operations health for every user role.
+  </Card>
+  <Card title="Clients & Leads" icon="users" href="/erp/clients-and-leads">
+    B2B client management, CRM pipeline, and lead scoring.
+  </Card>
+  <Card title="Inventory" icon="warehouse" href="/erp/inventory">
+    Multi-warehouse stock tracking with movement entries and reorder alerts.
+  </Card>
+  <Card title="Invoicing" icon="file-invoice-dollar" href="/erp/invoicing">
+    Invoice lifecycle from draft to paid, with line items and payment tracking.
+  </Card>
+</CardGroup>
+
+## Developer Reference
+
+<CardGroup cols={2}>
+  <Card title="Server Actions Reference" icon="code" href="/reference/actions-core">
+    Full API surface for all Server Actions: clients, jobs, inventory, invoices, settings.
+  </Card>
+  <Card title="Engineering Engine" icon="calculator" href="/reference/engineering-engine">
+    ASHRAE-based CFM calculation and detailed pre-engineering report generation.
+  </Card>
+  <Card title="Deployment Guide" icon="cloud-arrow-up" href="/ops/deployment">
+    Deploy to Vercel, Docker, or bare Node.js with environment variable setup.
+  </Card>
+  <Card title="Database Migrations" icon="database" href="/ops/database-migrations">
+    Supabase migration workflow, RLS strategy, and production deployment checklist.
+  </Card>
+</CardGroup>
+
+<Steps>
+  <Step title="Clone and install">
+    Clone the repository and install pinned dependencies with `npm install`.
+  </Step>
+  <Step title="Configure environment">
+    Copy `.env.example` to `.env.local` and fill in your Supabase project URL, anon key, and service role key.
+  </Step>
+  <Step title="Run migrations">
+    Apply Supabase migrations with `npx ts-node scripts/deploy-migrations.ts` against your local or cloud project.
+  </Step>
+  <Step title="Start the dev server">
+    Run `npm run dev` and open `http://localhost:3000`. The public landing page loads immediately; navigate to `/dashboard` to access the ERP.
+  </Step>
+</Steps>

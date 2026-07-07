@@ -1,0 +1,198 @@
+---
+title: "Monitoring and Observability for ERP B2B Premium"
+sidebarTitle: "Monitoring"
+description: "Health check endpoints, structured logging, performance timing, and recommended alerting integrations for ERP B2B Premium in production."
+---
+
+ERP B2B Premium exposes a health check API, uses a structured logger with pluggable transports, and instruments slow operations with a timing utility. In development the default transport writes to the console; in production, swap in a Sentry or Datadog transport via `setTransport()` at application startup.
+
+## Health check API
+
+The health check is implemented at `src/app/api/health/route.ts` as a Next.js App Router route handler.
+
+### Basic check — `GET /api/health`
+
+Returns `200 OK` as long as the Node.js process is running. This is the endpoint polled by Docker and uptime monitors.
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-06-22T14:30:00.000Z",
+  "uptime": 3600.5,
+  "node": "v22.1.0",
+  "memory": {
+    "rss": 45678,
+    "heapTotal": 12345,
+    "heapUsed": 9876
+  }
+}
+```
+
+### Full check — `GET /api/health?full=true`
+
+Adds a live Supabase connectivity check by querying the `tenants` table. Use this endpoint for synthetic monitors that need to verify end-to-end database access.
+
+**200 — healthy:**
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-06-22T14:30:00.000Z",
+  "uptime": 3600.5,
+  "node": "v22.1.0",
+  "memory": { "rss": 45678, "heapTotal": 12345, "heapUsed": 9876 },
+  "supabase": "connected"
+}
+```
+
+**503 — degraded (Supabase error or unreachable):**
+```json
+{
+  "status": "degraded",
+  "timestamp": "2026-06-22T14:30:00.000Z",
+  "uptime": 3600.5,
+  "node": "v22.1.0",
+  "memory": { "rss": 45678, "heapTotal": 12345, "heapUsed": 9876 },
+  "supabase": "error"
+}
+```
+
+The `supabase` field can be `"connected"`, `"error"` (Supabase returned a query error), or `"unreachable"` (the import or network call threw an exception).
+
+### Docker health check
+
+The `Dockerfile` registers a built-in health check using the basic endpoint:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+```
+
+After three consecutive failures within 30-second intervals, Docker marks the container `unhealthy`, triggering a restart policy or alerting your orchestrator.
+
+## Structured logging
+
+All application code must use `createLogger` from `src/lib/utils/logger.ts` instead of `console.*` calls.
+
+### Creating a module logger
+
+```typescript
+import createLogger from "@/lib/utils/logger";
+
+const log = createLogger("catalog");
+
+log.info("Fetching catalog", { data: { tenantCode } });
+log.warn("Cache miss — querying database");
+log.error("Catalog fetch failed", { error: err, data: { tenantCode } });
+```
+
+### Log format
+
+Every log line follows the pattern:
+
+```
+[ISO_TIMESTAMP] [LEVEL] [MODULE] message {data}
+```
+
+Example output:
+
+```
+[2026-06-22T14:30:00.123Z] [WARN] [perf] Slow operation: catalog-fetch {"elapsedMs":342}
+[2026-06-22T14:30:01.000Z] [ERROR] [catalog] Catalog fetch failed {"tenantCode":"acme"}
+```
+
+### Log levels
+
+| Level | Method | When to use |
+|-------|--------|-------------|
+| `debug` | `log.debug()` | Detailed trace information — development only |
+| `info` | `log.info()` | Normal operational events |
+| `warn` | `log.warn()` | Unexpected conditions that don't block execution |
+| `error` | `log.error()` | Failures that require attention |
+
+### Swapping the transport for production
+
+The default transport writes to `console.*`. Replace it with a Sentry or Datadog transport at application startup (e.g. in `src/instrumentation.ts`):
+
+```typescript
+import { setTransport } from "@/lib/utils/logger";
+import * as Sentry from "@sentry/nextjs";
+
+setTransport((entry) => {
+  if (entry.level === "error") {
+    Sentry.captureMessage(entry.message, {
+      level: "error",
+      extra: { module: entry.module, ...entry.data },
+    });
+  }
+  // forward all levels to Datadog, etc.
+});
+```
+
+See the [Logger reference](/reference/logger) page for the full `LogEntry` type and `child()` logger usage.
+
+## Performance timing
+
+Use `startTimer` from `src/lib/utils/timing.ts` to instrument any operation that may be slow. The utility automatically emits a `warn`-level log entry when the operation exceeds **300 ms**.
+
+```typescript
+import { startTimer } from "@/lib/utils/timing";
+
+const timer = startTimer("catalog-fetch");
+const catalog = await getIndustrialCatalog(tenantCode);
+const elapsedMs = timer.stop(); // logs warning if > 300ms
+```
+
+`stop()` returns the elapsed time in milliseconds so you can include it in your own response metrics.
+
+Wrap **all slow Server Actions** — catalog fetches, wizard submissions, report generation — with `startTimer` so that performance regressions surface automatically in the log stream.
+
+## Error classes
+
+`AppError` at `src/lib/utils/app-error.ts` is the canonical typed error for the entire application.
+
+### Error codes and HTTP status
+
+| Code | HTTP Status | When to use |
+|------|-------------|-------------|
+| `VALIDATION_ERROR` | 400 | Invalid or malformed input |
+| `AUTH_ERROR` | 401 | Unauthenticated request / expired session |
+| `FORBIDDEN` | 403 | Authenticated but not authorized |
+| `NOT_FOUND` | 404 | Resource does not exist |
+| `RATE_LIMITED` | 429 | Too many requests |
+| `TENANT_MISMATCH` | 403 | Cross-tenant data access attempt |
+| `INTERNAL_ERROR` | 500 | Unexpected server error (default) |
+
+### Server Action response convention
+
+All Server Actions in the project return a discriminated union:
+
+```typescript
+// Success
+{ status: "success", data: T }
+
+// Error
+{ status: "error", code: ErrorCode, message: string }
+```
+
+Use `toActionResponse()` from `app-error.ts` to wrap any promise and convert thrown `AppError` instances into the error shape automatically.
+
+## Recommended alerts
+
+Configure the following alerts in your monitoring stack:
+
+| Metric | Threshold | Priority |
+|--------|-----------|----------|
+| Catalog fetch latency | > 1 second | High |
+| Wizard submission error rate | > 5 % | High |
+| Slow DB queries (timing utility warnings) | > 300 ms | Medium |
+| `GET /api/health?full=true` response | Non-200 | Critical |
+| npm audit — high+ vulnerabilities | Any | High |
+
+### Recommended tooling
+
+| Tool | Role |
+|------|------|
+| **Sentry** | Error tracking, stack traces, release tracking |
+| **Datadog** | Metrics, APM, log aggregation, dashboards |
+| **UptimeRobot / Better Uptime** | External synthetic monitor for `/api/health?full=true` |
+| **GitHub Dependabot** | Automated security PRs (already configured in `.github/dependabot.yml`) |

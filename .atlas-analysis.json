@@ -1,0 +1,131 @@
+{
+  "projectType": "saas",
+  "projectName": "ERP B2B Premium",
+  "projectDescription": "A multi-tenant B2B ERP platform built with Next.js and Supabase, featuring industrial lead generation, CRM, inventory management, invoicing, and a public-facing pre-engineering wizard.",
+  "theme": "luma",
+  "primaryColor": "#1A1A1A",
+  "lightColor": "#F5F4F0",
+  "darkColor": "#0D0D0D",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "environment-setup"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/multi-tenancy",
+              "architecture/database-rls"
+            ]
+          },
+          {
+            "group": "Public Website",
+            "pages": [
+              "web/landing-page",
+              "web/wizard",
+              "web/catalog"
+            ]
+          },
+          {
+            "group": "ERP Dashboard",
+            "pages": [
+              "erp/dashboard",
+              "erp/clients-and-leads",
+              "erp/quotes-and-requirements",
+              "erp/jobs",
+              "erp/inventory",
+              "erp/invoicing"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "admin/users-and-roles",
+              "admin/tenant-settings",
+              "admin/white-label"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Reference",
+        "groups": [
+          {
+            "group": "Server Actions",
+            "pages": [
+              "reference/actions-core",
+              "reference/actions-web",
+              "reference/actions-erp"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "reference/engineering-engine",
+              "reference/pricing-engine",
+              "reference/logger",
+              "reference/rate-limiter"
+            ]
+          },
+          {
+            "group": "Deployment & Operations",
+            "pages": [
+              "ops/deployment",
+              "ops/database-migrations",
+              "ops/monitoring",
+              "ops/backup-and-rollback"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "RLS-based multi-tenancy — every row scoped by tenant_id enforced at the database level via Supabase Row Level Security",
+    "Public lead-generation wizard — 5-step pre-engineering form that calculates CFM requirements, estimates pricing, and auto-creates CRM records",
+    "Industrial product catalog — hierarchical Category → Subcategory → Family → Series → Product structure with specs, images, and CAD files",
+    "Role-adaptive ERP dashboard — KPIs and task queue tailored to the authenticated user's role (admin, comercial, operaciones, técnico, almacenista, auditor)",
+    "Engineering and pricing engines — pure-function modules for ASHRAE-based airflow (CFM) calculation and COP/USD price estimation",
+    "White-label branding — per-tenant dynamic theming (logo, colors, favicon) stored in tenant_settings and served publicly",
+    "Audit log and business events — immutable audit_log and business_events tables for traceability",
+    "CI/CD pipeline — GitHub Actions with TypeScript type-check, ESLint, Vitest unit tests, and npm security audit on every push"
+  ],
+  "publicApiSurface": [
+    "GET /api/health — basic liveness check",
+    "GET /api/health?full=true — liveness + Supabase connectivity check",
+    "submitWizardData(tenantCode, WizardSubmission) → WizardResult",
+    "getIndustrialCatalog(tenantCode?) → CatalogCategory[]",
+    "getClients(tenantCode?) — list tenant clients with total invoiced",
+    "createClient(tenantCode, clientData) — create a new B2B client",
+    "getLeads(tenantCode?) → LeadRow[]",
+    "updateLeadStatus(leadId, newStatus)",
+    "getQuotes(tenantCode?) → QuoteRow[]",
+    "createQuote(tenantCode, quoteData)",
+    "getRequirements(tenantCode?) → RequirementRow[]",
+    "createRequirement(tenantCode, reqData)",
+    "getJobs(tenantCode?) — list work orders",
+    "createJob(tenantCode, jobData)",
+    "getInventoryStock(tenantCode?) — list stock per warehouse/item",
+    "createInventoryMovement(tenantCode, movement) — entrada/salida/transferencia",
+    "getInvoices(tenantCode?) → InvoiceRow[]",
+    "createInvoice(tenantCode, invoiceData)",
+    "getDashboardCommandCenter(tenantCode) → DashboardCommandCenterData",
+    "getKpisForRole(tenantCode) → RoleDashboardData",
+    "listUsers(tenantCode) / createUser / updateUser / assignRole / removeRole",
+    "getTenantSettings / updateTenantSettings / getPublicTenantSettings",
+    "calculateRequiredCfm(dimensions, environment) → { cfm, cubicMeters, ... }",
+    "estimatePrice(serviceType, urgency, volumeCubicMeters) → PriceEstimation",
+    "generateEngineeringReport(dimensions, environment, altitude, temp, hasDucts) → DetailedEngineeringReport",
+    "resolveTenantIdAsync(tenantCode) → tenantId",
+    "checkRateLimit(identifier, maxRequests, windowMs) → { allowed, remaining }"
+  ]
+}

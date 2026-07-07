@@ -1,0 +1,115 @@
+---
+title: "Tenant Settings: Configuring ERP Behavior per Organization"
+sidebarTitle: "Tenant Settings"
+description: "Store and retrieve per-tenant configuration values including branding, integration credentials, and system behavior flags using the tenant_settings table."
+---
+
+`tenant_settings` is a key-value store scoped by `(tenant_id, module, config_key)`. It supports both plain and encrypted values. Public settings such as branding are readable anonymously via RLS; sensitive settings such as API keys are server-only and decrypted at read time via a Postgres RPC.
+
+## Server Actions
+
+All three actions live in `src/erp/actions/core.ts` and are marked `"use server"`.
+
+### `getTenantSettings`
+
+```typescript
+getTenantSettings(tenantCode?: string | null): Promise<Record<string, any>>
+```
+
+Requires an active authenticated session and passes the caller through `validateTenantAccess`. For any row where `is_encrypted = true`, the action calls the `get_tenant_setting` Postgres RPC to decrypt the value server-side before returning it. The result is a flat `Record<string, any>` keyed by `config_key`.
+
+### `getPublicTenantSettings`
+
+```typescript
+getPublicTenantSettings(tenantCode?: string | null): Promise<Record<string, any>>
+```
+
+No authentication required. Reads a fixed allow-list of public branding keys directly from `tenant_settings`. Safe to call from public-facing layouts and Next.js `generateMetadata` functions. Returns an empty object `{}` on query error rather than throwing.
+
+**Public keys returned:**
+
+```
+nombre_comercial    razon_social       logo_url
+logo_secondary_url  favicon_url        primary_color
+secondary_color     titulo_navegador   descripcion_sitio
+```
+
+### `updateTenantSettings`
+
+```typescript
+updateTenantSettings(
+  tenantCode: string | null,
+  module: string,
+  key: string,
+  value: any,
+  isEncrypted?: boolean   // default: false
+): Promise<TenantSettingRow>
+```
+
+Requires the `settings.manage` permission (enforced via `requireAction`) and `validateTenantAccess`. Performs an upsert on the unique constraint `(tenant_id, module, config_key)` so calling it multiple times for the same key is always safe.
+
+## Usage Examples
+
+### Update a branding color
+
+```typescript
+await updateTenantSettings(
+  "acme",           // tenantCode
+  "branding",       // module
+  "primary_color",  // key
+  "#2563EB",        // value
+  false             // isEncrypted
+);
+```
+
+### Store an encrypted API key
+
+```typescript
+await updateTenantSettings(
+  "acme",
+  "integrations",
+  "sendgrid_api_key",
+  "SG.xxxx",
+  true  // isEncrypted — stored encrypted, decrypted via RPC on read
+);
+```
+
+### Read all tenant settings (authenticated)
+
+```typescript
+const settings = await getTenantSettings("acme");
+// settings["primary_color"] => "#2563EB"
+// settings["sendgrid_api_key"] => "SG.xxxx" (already decrypted)
+```
+
+### Read public branding (unauthenticated)
+
+```typescript
+const branding = await getPublicTenantSettings("acme");
+// branding["logo_url"] => "https://..."
+// branding["primary_color"] => "#2563EB"
+```
+
+## Database Schema
+
+The `tenant_settings` table uses the following composite unique key:
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `tenant_id` | uuid | FK → `tenants.id` |
+| `module` | text | Logical grouping, e.g. `branding`, `integrations` |
+| `config_key` | text | Setting identifier |
+| `config_value` | jsonb | Plain value or ciphertext |
+| `is_encrypted` | boolean | Triggers RPC-based decryption on read |
+| `is_public` | boolean | Controls anonymous read via RLS |
+| `deleted_at` | timestamptz | Soft-delete; `null` = active row |
+
+The upsert conflict target is `(tenant_id, module, config_key)`.
+
+<Warning>
+Encrypted values are decrypted server-side via the `get_tenant_setting` Postgres RPC. The encryption key is managed by Supabase Vault and never leaves the database layer. **Never store secrets in plain `config_value` rows** — always pass `isEncrypted: true` for API keys, webhook secrets, and other sensitive credentials.
+</Warning>
+
+<Note>
+The `is_public = true` flag on a `tenant_settings` row controls whether anonymous users can read it through the `tenant_settings_read_anon` RLS policy. Only mark branding display fields as public. **Never set `is_public = true` on API keys, internal configuration, or encrypted rows.**
+</Note>

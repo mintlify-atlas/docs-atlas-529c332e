@@ -1,0 +1,86 @@
+---
+title: "Public Landing Page: Marketing Site and Lead Capture"
+sidebarTitle: "Landing Page"
+description: "How ERP B2B Premium's public landing page works — marketing sections, CFM calculator widget, and the floating CTA that feeds the lead wizard."
+---
+
+The public landing page lives at `src/app/page.tsx` and serves as the top-of-funnel marketing surface. It is rendered server-side and uses dynamic tenant branding loaded from `tenant_settings`. Every section — from the hero headline to the floating CTA button — is colored and labeled according to the active tenant's white-label configuration, with no code change required between deployments.
+
+## Page sections
+
+The landing page is composed of a fixed sequence of marketing sections defined in `src/app/page.tsx`:
+
+| Section | Component | Purpose |
+|---|---|---|
+| Hero | `HeroSection` | Full-viewport headline with primary CTA |
+| Services | `ServicesSection` | Industrial service cards (fabricación, venta, mantenimiento, etc.) |
+| Sectors | `SectorsSection` | Target industry verticals |
+| Disciplines | `DisciplinesSection` | Engineering disciplines and capabilities |
+| CFM Calculator | `LandingCfmCalculator` | Interactive airflow preview widget |
+| Trust Marquee | `TrustMarquee` | Scrolling logos / social proof |
+| Process Pipeline | `ProcessPipeline` | Visual step-by-step engagement flow |
+| Featured Case Studies | `CaseStudiesSection` | Selected client projects |
+| Floating CTA | `FloatingCta` | Sticky call-to-action anchored to the wizard |
+| Contact Form | `ContactFormSection` | Quick-contact lead capture |
+
+## Route structure
+
+| Route | File | Description |
+|---|---|---|
+| `/` | `src/app/page.tsx` | Main landing page |
+| `/wizard` | `src/app/wizard/` | Pre-engineering wizard |
+| `/portal` | `src/app/portal/` | Public client portal |
+| `/catalog` | `src/app/(landing)/catalog/` | Industrial product catalog |
+
+## White-label branding
+
+Tenant branding is resolved server-side via `getPublicBranding(tenantCode?)` from `src/web/actions/branding.ts`, which delegates to `getTenantBranding()`. This function reads all `tenant_settings` rows where `is_public = true` — covering the `EMPRESA`, `IDENTIDAD`, `LOCALIZACION`, and `DOCUMENTOS` modules — and merges them over hard-coded defaults from `getBrandingDefaults()`.
+
+The resolved `BrandingConfig` object is passed directly into the root layout, making the following fields available to every page component without additional fetches:
+
+- `nombre_comercial` — displayed as the site title and in the navbar
+- `logo_claro_url` / `logo_oscuro_url` — swapped automatically based on color scheme
+- `favicon_url` — injected into `<head>` metadata
+- `primary_color` — applied as the Tailwind CSS custom property `--color-brand`
+
+<Tip>
+  To customize the landing page for a new tenant, update `tenant_settings` rows for that tenant's `primary_color`, `logo_url`, `favicon_url`, and `nombre_comercial` — no code change needed. Changes take effect on the next server render.
+</Tip>
+
+## CFM calculator widget
+
+`LandingCfmCalculator.tsx` is a `"use client"` component embedded in the landing page between the Disciplines and Trust Marquee sections. It lets industrial buyers preview their airflow (CFM) requirements before committing to the full 5-step wizard.
+
+The widget accepts the three spatial dimensions (length, width, height in meters) and an environment type, then runs `calculateRequiredCfm()` from `src/utils/engineering.ts` entirely in the browser — no server round-trip is needed for the preview. The calculated CFM value and a recommended equipment category are displayed inline, and a prominent "Start Wizard" CTA pre-fills those values into the full wizard form.
+
+The underlying CFM formula uses ASHRAE-standard Air Changes per Hour (ACH) rates per environment type and a pollutant correction factor for heavy industrial environments:
+
+```
+CFM = ((volume_m³ × 35.3147 ft³/m³) × ACH / 60) × pollutantFactor
+```
+
+## Contact form and lead capture
+
+The contact form at the bottom of the landing page calls `submitContactForm()` from `src/web/actions/leads.ts` — a `"use server"` action that:
+
+1. Validates the payload with the `contactFormSchema` Zod schema.
+2. Applies `sanitizeObject()` on all string fields to prevent XSS.
+3. Enforces a rate limit keyed to `contact:${email}`.
+4. Calculates a lead score and inserts a row into the `leads` table with `lead_source = 'WEBSITE'` and `status = 'NUEVO'`.
+
+The floating CTA (`FloatingCta`) links directly to `/wizard`, routing the user into the full 5-step pre-engineering funnel for deeper qualification.
+
+## Data flow summary
+
+```
+Browser
+  └── Landing Page (SSR, src/app/page.tsx)
+        ├── getPublicBranding()   → tenant_settings (is_public = true)
+        ├── LandingCfmCalculator  → calculateRequiredCfm() [client-side]
+        └── Contact Form
+              └── submitContactForm() [Server Action]
+                    ├── contactFormSchema (Zod)
+                    ├── sanitizeObject()
+                    ├── checkRateLimit()
+                    └── leads table INSERT
+```

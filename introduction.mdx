@@ -1,0 +1,91 @@
+---
+title: "ERP B2B Premium: Modular Multi-tenant Industrial ERP"
+sidebarTitle: "Introduction"
+description: "Learn what ERP B2B Premium is, who it's for, the core modules it ships with, and the technologies it is built on."
+---
+
+ERP B2B Premium is a production-grade, modular enterprise resource planning platform built specifically for **industrial services companies** — HVAC, mechanical, refrigeration, and related trades. It ships as two tightly integrated layers: a **public marketing website** (landing pages, lead-generation wizard, and industrial product catalog) and a **fully authenticated ERP dashboard** (CRM, quoting, job management, invoicing, inventory, and more). Both layers share a single Next.js 16 App Router codebase backed by Supabase Postgres with row-level security, giving every tenant a fully isolated data environment without the cost of separate databases.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="RLS Multi-tenancy" icon="shield">
+    Every table is protected by Supabase Row Level Security policies. Tenant isolation is enforced at the database layer — no application-level filtering required.
+  </Card>
+  <Card title="Lead Generation Wizard" icon="wand-magic-sparkles">
+    A five-step guided funnel captures corporate info, service selection, and technical requirements. It automatically calculates CFM requirements and estimated pricing before creating a qualified lead in the CRM.
+  </Card>
+  <Card title="Industrial Catalog" icon="boxes-stacked">
+    A public-facing product and services catalog with server-cached queries, tenant-scoped pricing, and full-text search — ready to embed in any tenant's marketing site.
+  </Card>
+  <Card title="Role-adaptive Dashboard" icon="gauge-high">
+    The ERP dashboard adapts its navigation and permissions to the authenticated user's role (admin, manager, technician, sales) without requiring separate deployments.
+  </Card>
+  <Card title="Engineering & Pricing Engines" icon="calculator">
+    Pure TypeScript utilities at `src/utils/engineering.ts` and `src/utils/pricing.ts` drive CFM calculations and quote estimation — fully unit-tested and decoupled from UI.
+  </Card>
+  <Card title="White-label Branding" icon="palette">
+    Dynamic per-tenant theming through `src/web/actions/branding.ts` lets each customer apply custom colors, logos, and typography at runtime without a redeploy.
+  </Card>
+  <Card title="Audit Trail" icon="clock-rotate-left">
+    Every mutation to critical tables is captured by Supabase triggers into an immutable `audit_logs` table, providing a full history of who changed what and when.
+  </Card>
+  <Card title="CI/CD Pipeline" icon="circle-check">
+    A GitHub Actions workflow runs TypeScript type checking, ESLint, Vitest unit tests, and `npm audit` on every push and pull request — blocking merges on any failure.
+  </Card>
+</CardGroup>
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Framework | Next.js **16.2.9** — App Router, React Server Components, Server Actions |
+| UI Runtime | React **19.2.4** + React DOM **19.2.4** |
+| Database | Supabase (PostgreSQL + Row Level Security) via `@supabase/supabase-js` **2.108.2** |
+| Language | TypeScript **5.9.3** — `strict: true` throughout |
+| Styling | Tailwind CSS **v4.3.1** with `@tailwindcss/postcss` plugin |
+| Validation | Zod **4.4.3** (v4 branch — see dependency notes) |
+| Testing | Vitest **3.1.3** + `@vitest/coverage-v8` |
+| Animation | Framer Motion **12.40.0** |
+| Charts | Recharts **3.8.1** |
+| Forms | React Hook Form **7.79.0** + `@hookform/resolvers` **5.4.0** |
+| Icons | Lucide React **1.21.0** |
+| Notifications | Sonner **2.0.7** |
+
+All production and development dependencies are **version-pinned** (no `^` ranges) to guarantee reproducible builds across environments.
+
+## Project Layout
+
+The codebase is organized into bounded contexts that map directly to deployment concerns:
+
+```
+src/
+├── web/              # Public marketing site + wizard + catalog
+│   ├── actions/      # Server Actions (wizard, leads, catalog, branding)
+│   └── components/   # React components (marketing, wizard, shared UI)
+│
+├── erp/              # Authenticated ERP dashboard
+│   └── actions/      # Server Actions for all ERP modules
+│
+├── platform/         # Cross-cutting infrastructure
+│   ├── auth/         # Supabase client factory (browser, server, admin)
+│   ├── middleware/   # Next.js edge middleware (auth, tenant, redirects)
+│   ├── tenant/       # Tenant resolver — code → UUID with hybrid cache
+│   └── branding/     # White-label theming helpers
+│
+├── lib/              # Shared utilities
+│   └── utils/        # logger, rate-limiter, sanitize, timing, constants
+│
+├── utils/            # Domain engines
+│   ├── engineering.ts  # CFM and load calculations
+│   └── pricing.ts      # Quote and cost estimation
+│
+supabase/
+└── migrations/       # SQL migration files (timestamped, sequential)
+
+scripts/              # Deployment, seeding, and validation scripts
+```
+
+<Note>
+The `AGENTS.md` file at the repository root is the **canonical developer reference** for all setup commands, hardware requirements, code-style rules, pre-commit quality gates, migration strategy, and rollback procedures. Consult it whenever the docs and the codebase diverge.
+</Note>

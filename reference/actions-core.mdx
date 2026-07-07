@@ -1,0 +1,520 @@
+---
+title: "Core ERP Server Actions: Clients, Jobs, Inventory, Invoices, Settings"
+sidebarTitle: "Core Actions"
+description: "API reference for all core ERP Server Actions — clients, jobs, inventory movements, invoices, and tenant settings — with full parameter and return type documentation."
+---
+
+Core ERP Server Actions live in `src/erp/actions/core.ts`. All actions are marked `"use server"` and run exclusively on the server. Every authenticated action calls `requireAction()` for RBAC enforcement and `validateTenantAccess()` for tenant isolation before querying Supabase.
+
+<Info>
+  **Common action pattern** — All ERP actions follow the same four-step guard sequence before touching the database:
+
+  1. Call `requireAction(permission)` to verify the authenticated user holds the required RBAC permission.
+  2. Resolve the tenant UUID with `getTenantId(tenantCode)`.
+  3. Call `validateTenantAccess(userId, role, tenantId)` to enforce multi-tenant isolation.
+  4. Query or mutate via `supabaseAdmin` (service-role client, bypasses RLS at the DB layer — isolation is enforced at step 3).
+</Info>
+
+---
+
+## getTenantId
+
+```typescript
+getTenantId(tenantCode?: string | null): Promise<string>
+```
+
+Resolves a tenant subdomain code to its internal UUID. Delegates to `resolveTenantIdAsync()` from the tenant resolver module. Used as the first step in every action that scopes data to a tenant.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  The tenant subdomain code (e.g. `"acme"`). When `null` or `undefined`, the resolver falls back to the current session's tenant context.
+</ParamField>
+
+**Returns** `Promise<string>` — the tenant UUID.
+
+---
+
+## Clients
+
+### getClients
+
+```typescript
+getClients(tenantCode?: string | null): Promise<ClientListItem[]>
+```
+
+Returns all non-deleted clients for the tenant. For each client, computes `totalInvoiced` by summing `total_amount` across invoices with status `EMITIDA`, `PARCIALMENTE_PAGADA`, or `PAGADA`.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code. Resolved to UUID via `getTenantId`.
+</ParamField>
+
+**Returns** `Promise<ClientListItem[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Client UUID |
+| `taxId` | `string` | Tax identification number (`tax_id`) |
+| `name` | `string` | Legal name (`legal_name`) |
+| `segment` | `string` | Industry segment; defaults to `"General"` |
+| `totalInvoiced` | `number` | Sum of all qualifying invoices in COP |
+| `status` | `"ACTIVO" \| "SUSPENDIDO" \| "PENDIENTE"` | Mapped from DB `status` field |
+
+**Throws** if not authenticated or if Supabase returns an error.
+
+---
+
+### createClient
+
+```typescript
+createClient(
+  tenantCode: string | null,
+  clientData: {
+    taxId: string;
+    name: string;
+    segment: string;
+    email: string;
+  }
+): Promise<Client>
+```
+
+Creates a new client record for the tenant. Requires the `clients.create` RBAC permission.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="clientData.taxId" type="string" required>
+  Tax ID (NIT). Must be unique within the tenant — throws `"Ya existe un cliente con este NIT para este tenant."` if a non-deleted client with the same `tax_id` already exists.
+</ParamField>
+
+<ParamField path="clientData.name" type="string" required>
+  Legal name stored in `legal_name`.
+</ParamField>
+
+<ParamField path="clientData.segment" type="string" required>
+  Industry segment stored in `industry`.
+</ParamField>
+
+<ParamField path="clientData.email" type="string" required>
+  Contact email address.
+</ParamField>
+
+**Returns** `Promise<Client>` — the full inserted row. New clients are created with `client_type: "Empresa"`, `country: "México"`, `status: "ACTIVO"`, and `assigned_user_id` set to the tenant owner.
+
+**Required permission:** `clients.create`
+
+---
+
+## Jobs
+
+### getJobs
+
+```typescript
+getJobs(tenantCode?: string | null): Promise<JobListItem[]>
+```
+
+Returns all jobs for the tenant ordered by creation date (newest first). DB priority values (`HIGH` / `LOW` / `MEDIUM`) are mapped to display strings (`ALTA` / `BAJA` / `MEDIA`). Status `EN_EJECUCION` is normalized to `EN_PROGRESO`.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<JobListItem[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Job UUID |
+| `code` | `string` | Job code, e.g. `JOB-2026-001` |
+| `description` | `string` | Title of the job |
+| `assignedTech` | `string` | Derived from the tenant's branding `nombre_comercial` |
+| `priority` | `"BAJA" \| "MEDIA" \| "ALTA"` | Localized priority |
+| `startDate` | `string` | `YYYY-MM-DD` from `planned_start_date` |
+| `endDate` | `string` | `YYYY-MM-DD` from `planned_end_date` |
+| `status` | `"PENDIENTE" \| "EN_PROGRESO" \| "COMPLETADA" \| "CANCELADA"` | Normalized status |
+
+**Throws** if not authenticated or on Supabase error.
+
+---
+
+### createJob
+
+```typescript
+createJob(
+  tenantCode: string | null,
+  jobData: {
+    description: string;
+    assignedTech: string;
+    priority: "ALTA" | "MEDIA" | "BAJA";
+    startDate: string;
+    endDate: string;
+  }
+): Promise<Job>
+```
+
+Creates a new job (work order) for the tenant. Requires the `jobs.create` RBAC permission. Auto-generates a sequential job code in the format `JOB-2026-NNN`.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="jobData.description" type="string" required>
+  Job title/description. Truncated to 100 characters for the `title` column; full text stored in `description`.
+</ParamField>
+
+<ParamField path="jobData.assignedTech" type="string" required>
+  Assigned technician label. The action resolves the actual `assigned_user_id` to the tenant owner.
+</ParamField>
+
+<ParamField path="jobData.priority" type='"ALTA" | "MEDIA" | "BAJA"' required>
+  Display priority. Mapped back to DB values: `ALTA → HIGH`, `BAJA → LOW`, `MEDIA → MEDIUM`.
+</ParamField>
+
+<ParamField path="jobData.startDate" type="string" required>
+  Planned start date in `YYYY-MM-DD` format.
+</ParamField>
+
+<ParamField path="jobData.endDate" type="string" required>
+  Planned end date in `YYYY-MM-DD` format.
+</ParamField>
+
+**Returns** `Promise<Job>` — the full inserted row. New jobs are created with `status: "PENDIENTE"` and the tenant owner set as `created_by`.
+
+**Required permission:** `jobs.create`
+
+---
+
+## Inventory
+
+### getInventoryStock
+
+```typescript
+getInventoryStock(tenantCode?: string | null): Promise<StockItem[]>
+```
+
+Returns all inventory stock rows for the tenant, joining warehouse and item information.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<StockItem[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Composite key: `{warehouseId}-{itemId}` |
+| `warehouseCode` | `string` | Warehouse code |
+| `warehouseName` | `string` | Warehouse display name |
+| `itemCode` | `string` | Item/SKU code |
+| `itemName` | `string` | Item display name |
+| `sku` | `string` | Alias for `itemCode` |
+| `category` | `string` | Item category |
+| `unit` | `string` | Unit of measure; defaults to `"Unidad"` |
+| `quantity` | `number` | Total quantity on hand |
+| `reserved` | `number` | Reserved quantity |
+| `available` | `number` | Available quantity (`quantity - reserved`) |
+
+---
+
+### createInventoryMovement
+
+```typescript
+createInventoryMovement(
+  tenantCode: string | null,
+  movement: {
+    type: "Entrada" | "Salida" | "Transferencia";
+    itemCode: string;
+    quantity: number;
+    notes: string;
+    sourceWarehouse: string;
+    destWarehouse?: string;
+  }
+): Promise<InventoryMovement>
+```
+
+Records an inventory movement. Requires the `inventory.movement` RBAC permission.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="movement.type" type='"Entrada" | "Salida" | "Transferencia"' required>
+  Movement type. `Salida` and `Transferencia` trigger a stock availability check before insertion.
+</ParamField>
+
+<ParamField path="movement.itemCode" type="string" required>
+  The `item_code` of the inventory item. Throws if not found in the tenant.
+</ParamField>
+
+<ParamField path="movement.quantity" type="number" required>
+  Quantity to move. For `Salida` and `Transferencia`, throws `"Stock insuficiente en bodega origen"` if the source warehouse's `available_quantity` is less than this value.
+</ParamField>
+
+<ParamField path="movement.notes" type="string" required>
+  Free-text notes for the movement record.
+</ParamField>
+
+<ParamField path="movement.sourceWarehouse" type="string" required>
+  `warehouse_code` of the source warehouse. Throws if not found.
+</ParamField>
+
+<ParamField path="movement.destWarehouse" type="string" optional>
+  `warehouse_code` of the destination warehouse. Required when `type` is `"Transferencia"`. Throws if not found.
+</ParamField>
+
+**Returns** `Promise<InventoryMovement>` — the full inserted row with auto-generated code `MOV-2026-NNNN`. Movements are automatically set to `status: "Aplicado"`.
+
+**Required permission:** `inventory.movement`
+
+---
+
+### createInventoryItem
+
+```typescript
+createInventoryItem(
+  tenantCode: string | null,
+  itemData: {
+    itemCode: string;
+    name: string;
+    description: string;
+    category: string;
+    itemType: "Material" | "Herramienta" | "Equipo" | "Consumible" | "Repuesto";
+    unit: string;
+    minimumStock: number;
+    maximumStock: number;
+    reorderPoint: number;
+    initialQuantity?: number;
+    warehouseId?: string;
+  }
+): Promise<InventoryItem>
+```
+
+Creates a new inventory item. Requires the `items.manage` RBAC permission. If `initialQuantity` and `warehouseId` are both provided, seeds an `inventory_stock` row and records an `"Entrada"` movement with notes `"Carga inicial de inventario"`.
+
+<ParamField path="itemData.itemCode" type="string" required>
+  Unique item/SKU code within the tenant.
+</ParamField>
+
+<ParamField path="itemData.name" type="string" required>
+  Display name of the item.
+</ParamField>
+
+<ParamField path="itemData.description" type="string" required>
+  Detailed description.
+</ParamField>
+
+<ParamField path="itemData.category" type="string" required>
+  Item category (free text).
+</ParamField>
+
+<ParamField path="itemData.itemType" type='"Material" | "Herramienta" | "Equipo" | "Consumible" | "Repuesto"' required>
+  Classification type stored in `item_type`.
+</ParamField>
+
+<ParamField path="itemData.unit" type="string" required>
+  Unit of measure (e.g. `"Unidad"`, `"kg"`, `"m"`).
+</ParamField>
+
+<ParamField path="itemData.minimumStock" type="number" required>
+  Minimum stock threshold that triggers reorder alerts.
+</ParamField>
+
+<ParamField path="itemData.maximumStock" type="number" required>
+  Maximum stock capacity for the item.
+</ParamField>
+
+<ParamField path="itemData.reorderPoint" type="number" required>
+  Stock level at which a purchase order should be raised.
+</ParamField>
+
+<ParamField path="itemData.initialQuantity" type="number" optional>
+  If provided (and `> 0`), seeds initial stock in the specified warehouse.
+</ParamField>
+
+<ParamField path="itemData.warehouseId" type="string" optional>
+  UUID of the warehouse for the initial stock seed. Required when `initialQuantity > 0`.
+</ParamField>
+
+**Returns** `Promise<InventoryItem>` — the full inserted row. Items are created with `status: "Activo"` and `average_cost: 0`.
+
+**Required permission:** `items.manage`
+
+---
+
+### getWarehouses
+
+```typescript
+getWarehouses(tenantCode?: string | null): Promise<WarehouseItem[]>
+```
+
+Returns all non-deleted warehouses for the tenant, ordered by name.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<WarehouseItem[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Warehouse UUID |
+| `name` | `string` | Display name |
+| `code` | `string` | Warehouse code (`warehouse_code`) |
+
+---
+
+## Invoices
+
+### getInvoices
+
+```typescript
+getInvoices(tenantCode?: string | null): Promise<InvoiceListItem[]>
+```
+
+Returns all non-deleted invoices for the tenant, ordered by creation date (newest first). Soft-deleted invoices (`deleted_at IS NOT NULL`) are excluded.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<InvoiceListItem[]>` where each item has:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `string` | Invoice UUID |
+| `code` | `string` | Invoice code, e.g. `FAC-2026-0001` |
+| `clientName` | `string` | Client's `legal_name`; falls back to `"Cliente General"` |
+| `totalAmount` | `number` | Full invoice amount |
+| `paidAmount` | `number` | Amount paid so far |
+| `status` | `"BORRADOR" \| "EMITIDA" \| "PARCIALMENTE_PAGADA" \| "PAGADA" \| "ANULADA"` | Invoice lifecycle status |
+| `date` | `string` | `YYYY-MM-DD` from `invoice_date` |
+
+---
+
+### createInvoice
+
+```typescript
+createInvoice(
+  tenantCode: string | null,
+  invoiceData: {
+    clientName: string;
+    concept: string;
+    amount: number;
+  }
+): Promise<Invoice>
+```
+
+Creates a new invoice with a single line item. Requires the `invoices.manage` RBAC permission.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="invoiceData.clientName" type="string" required>
+  Matched against `legal_name` in the `clients` table. If no exact match is found, falls back to the first active client in the tenant.
+</ParamField>
+
+<ParamField path="invoiceData.concept" type="string" required>
+  Line item description stored in `invoice_items.description`.
+</ParamField>
+
+<ParamField path="invoiceData.amount" type="number" required>
+  Total invoice amount in COP. Used for `subtotal`, `total_amount`, and the single line item's `unit_price` and `line_total`.
+</ParamField>
+
+**Returns** `Promise<Invoice>` — the full inserted invoice row. The generated code follows the pattern `FAC-2026-NNNN`. New invoices are created with:
+- `status: "EMITIDA"`
+- `due_date` set to 30 days from the current date
+- `discount_amount: 0`, `tax_amount: 0`, `paid_amount: 0`
+
+A corresponding `invoice_items` row is inserted automatically.
+
+**Required permission:** `invoices.manage`
+
+---
+
+## Tenant Settings
+
+### getTenantSettings
+
+```typescript
+getTenantSettings(tenantCode?: string | null): Promise<Record<string, any>>
+```
+
+Returns all settings for the authenticated tenant as a flat key-value record. Encrypted fields (where `is_encrypted = true`) are transparently decrypted via the `get_tenant_setting` Supabase RPC before being returned. Soft-deleted settings are excluded.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<Record<string, any>>` — object keyed by `config_key`. Values for encrypted fields are the decrypted plaintext; if decryption fails, the raw ciphertext is returned as a fallback.
+
+**Requires authentication.** Throws `"No autenticado"` if no session is present.
+
+---
+
+### getPublicTenantSettings
+
+```typescript
+getPublicTenantSettings(tenantCode?: string | null): Promise<Record<string, any>>
+```
+
+No-auth variant that returns only the nine public branding keys safe to expose to unauthenticated visitors. Does not call `requireAction` or `getAuthContext`.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code.
+</ParamField>
+
+**Returns** `Promise<Record<string, any>>` containing any subset of these keys that exist in `tenant_settings`:
+
+| Key | Description |
+|---|---|
+| `nombre_comercial` | Trading name |
+| `razon_social` | Legal company name |
+| `logo_url` | Primary logo URL |
+| `logo_secondary_url` | Secondary / dark-mode logo URL |
+| `favicon_url` | Browser favicon URL |
+| `primary_color` | Brand primary color (hex) |
+| `secondary_color` | Brand secondary color (hex) |
+| `titulo_navegador` | Browser tab title |
+| `descripcion_sitio` | Site meta description |
+
+Returns an empty object `{}` on error rather than throwing.
+
+---
+
+### updateTenantSettings
+
+```typescript
+updateTenantSettings(
+  tenantCode: string | null,
+  module: string,
+  key: string,
+  value: any,
+  isEncrypted?: boolean
+): Promise<TenantSetting>
+```
+
+Upserts a single tenant setting. Requires the `settings.manage` RBAC permission. The upsert conflict target is `(tenant_id, module, config_key)`.
+
+<ParamField path="tenantCode" type="string | null" required>
+  Tenant subdomain code.
+</ParamField>
+
+<ParamField path="module" type="string" required>
+  Settings module name (e.g. `"EMPRESA"`, `"IDENTIDAD"`, `"LOCALIZACION"`, `"DOCUMENTOS"`).
+</ParamField>
+
+<ParamField path="key" type="string" required>
+  Configuration key (`config_key`) to upsert.
+</ParamField>
+
+<ParamField path="value" type="any" required>
+  New value. Stored as JSONB in Supabase.
+</ParamField>
+
+<ParamField path="isEncrypted" type="boolean" optional>
+  When `true`, the value will be marked for encryption in the database. Defaults to `false`.
+</ParamField>
+
+**Returns** `Promise<TenantSetting>` — the upserted row. `updated_at` is automatically set to the current timestamp and `updated_by` to the tenant owner's user ID.
+
+**Required permission:** `settings.manage`

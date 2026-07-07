@@ -1,0 +1,107 @@
+---
+title: "Pricing Engine: COP/USD Project Cost Estimation"
+sidebarTitle: "Pricing Engine"
+description: "Reference for the pricing engine — estimates B2B project costs in COP and USD with service-type base prices, urgency multipliers, and volume scaling."
+---
+
+The pricing engine (`src/utils/pricing.ts`) generates budgetary cost estimates for industrial ventilation projects. It produces min/max price ranges in both COP (Colombian Peso) and USD using a fixed exchange rate, urgency multipliers, and volume scaling.
+
+## Exchange Rate
+
+```
+COP_TO_USD_RATE = 4000
+```
+
+Imported from `src/lib/constants.ts`. This is the **single source of truth** for COP↔USD conversion across the entire codebase. The re-export in `src/utils/pricing.ts` is deprecated — always import directly from `@/lib/constants`.
+
+## Base Prices by Service
+
+Defined in `BASE_PRICE_BY_SERVICE`:
+
+| Service | Base Price (COP) |
+|---------|------------------|
+| `fabricacion` | 1,200,000 |
+| `venta` | 800,000 |
+| `mantenimiento` | 300,000 |
+| `reparacion` | 500,000 |
+| `default` | 500,000 |
+
+## Urgency Multipliers
+
+Defined in `URGENCY_MULTIPLIERS`:
+
+| Urgency | Multiplier | Effect |
+|---------|------------|--------|
+| `alta` | 1.35 | +35% |
+| `media` | 1.10 | +10% |
+| `baja` | 1.00 | No change |
+
+## Volume Modifier
+
+For every 100 cubic meters of project volume, the base price increases by **5%**:
+
+```
+volumeModifier = 1 + (volumeM3 / 100) × 0.05
+subtotalCop    = basePriceCop × volumeModifier
+```
+
+## Price Deviation Range
+
+A ±15% range is applied to the estimated total to produce the budgetary min/max band:
+
+```
+rangeMin = estimatedTotal × 0.85
+rangeMax = estimatedTotal × 1.15
+```
+
+## Exported Functions
+
+### `estimatePrice(serviceType, urgency, volumeCubicMeters)`
+
+```typescript
+estimatePrice(
+  serviceType: string,
+  urgency: string,
+  volumeCubicMeters: number
+): PriceEstimation
+```
+
+Calculates a full price estimation for a given service type, urgency level, and physical volume.
+
+**`PriceEstimation` interface:**
+
+```typescript
+interface PriceEstimation {
+  basePriceCop: number;
+  urgencyMultiplier: number;
+  subtotalCop: number;
+  estimatedTotalCop: number;
+  estimatedTotalUsd: number;
+  rangeMinCop: number;
+  rangeMaxCop: number;
+  rangeMinUsd: number;
+  rangeMaxUsd: number;
+  rate: number;              // COP_TO_USD_RATE = 4000
+}
+```
+
+**Input safety:**
+
+- `volumeCubicMeters` is clamped between **0.001** and **10,000,000 m³**. Values outside this range are silently adjusted and a warning is logged.
+- The urgency multiplier is **capped at 2.0**, regardless of the value looked up from `URGENCY_MULTIPLIERS`.
+
+## Usage Example
+
+```typescript
+import { estimatePrice } from "@/utils/pricing";
+
+const estimate = estimatePrice("fabricacion", "alta", 1200);
+// 1200 m³ warehouse, fabrication service, high urgency
+
+console.log(`Range: ${estimate.rangeMinCop.toLocaleString()} – ${estimate.rangeMaxCop.toLocaleString()} COP`);
+console.log(`USD range: $${estimate.rangeMinUsd} – $${estimate.rangeMaxUsd}`);
+```
+
+<Note>
+  These are **budgetary estimates only** — ±15% deviation. They are presented to leads during the wizard to qualify interest, not as final commercial offers.
+</Note>

@@ -1,72 +1,104 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "ERP B2B Premium",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#1A1A1A",
+    "light": "#F5F4F0",
+    "dark": "#0D0D0D"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/ency07/B2B"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/ency07/B2B"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "environment-setup"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/multi-tenancy",
+              "architecture/database-rls"
+            ]
+          },
+          {
+            "group": "Public Website",
+            "pages": [
+              "web/landing-page",
+              "web/wizard",
+              "web/catalog"
+            ]
+          },
+          {
+            "group": "ERP Dashboard",
+            "pages": [
+              "erp/dashboard",
+              "erp/clients-and-leads",
+              "erp/quotes-and-requirements",
+              "erp/jobs",
+              "erp/inventory",
+              "erp/invoicing"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "admin/users-and-roles",
+              "admin/tenant-settings",
+              "admin/white-label"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Reference",
+        "groups": [
+          {
+            "group": "Server Actions",
+            "pages": [
+              "reference/actions-core",
+              "reference/actions-web",
+              "reference/actions-erp"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "reference/engineering-engine",
+              "reference/pricing-engine",
+              "reference/logger",
+              "reference/rate-limiter"
+            ]
+          },
+          {
+            "group": "Deployment & Operations",
+            "pages": [
+              "ops/deployment",
+              "ops/database-migrations",
+              "ops/monitoring",
+              "ops/backup-and-rollback"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

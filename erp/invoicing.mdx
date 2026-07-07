@@ -1,0 +1,92 @@
+---
+title: "Invoicing: Billing Lifecycle from Draft to Payment"
+sidebarTitle: "Invoicing"
+description: "Create invoices with line items, track payment status from EMITIDA to PAGADA, and monitor collection rates in ERP B2B Premium."
+---
+
+The invoicing module covers the full billing lifecycle. Invoices are created as `EMITIDA`, updated as partial or full payments are recorded, and can be voided (`ANULADA`). Collection rate and overdue balances feed directly into the admin dashboard KPIs and the operations health `billing` score.
+
+## Invoice statuses
+
+| Status | Description |
+|---|---|
+| `BORRADOR` | Draft — created but not yet sent to the client |
+| `EMITIDA` | Issued and sent to the client |
+| `PARCIALMENTE_PAGADA` | Partial payment received; balance remains |
+| `PAGADA` | Fully paid |
+| `ANULADA` | Voided — excluded from all financial calculations |
+
+## `getInvoices(tenantCode?)` → invoice list
+
+Returns all non-deleted invoices for the tenant ordered by `created_at` descending, joining the client's `legal_name`:
+
+```typescript
+{
+  id: string;
+  code: string;        // e.g. "FAC-2026-0001"
+  clientName: string;
+  totalAmount: number;
+  paidAmount: number;
+  status: "BORRADOR" | "EMITIDA" | "PARCIALMENTE_PAGADA" | "PAGADA" | "ANULADA";
+  date: string;        // YYYY-MM-DD
+}
+```
+
+## `createInvoice(tenantCode, invoiceData)`
+
+Requires the `invoices.manage` action permission. The invoice code is auto-generated as `FAC-YYYY-NNNN` (zero-padded to 4 digits) from a `COUNT` query on the tenant's existing invoices. The `due_date` defaults to 30 days from the issue date.
+
+```typescript
+createInvoice(tenantCode: string | null, invoiceData: {
+  clientName: string;   // matched by legal_name; falls back to first client if not found
+  concept: string;
+  amount: number;       // COP
+})
+```
+
+The action performs a `legal_name` lookup against `clients` scoped to the tenant. If no match is found, it falls back to the tenant's first active client. The invoice is created with:
+- `status: "EMITIDA"`
+- `source_type: "CLIENT"`, `source_id: clientId`
+- `subtotal`, `total_amount` set to `amount`; `discount_amount` and `tax_amount` both `0`
+- `paid_amount: 0`
+
+## Invoice line items
+
+Each invoice created via `createInvoice` automatically gets one `invoice_items` row. Items can also be managed directly on the `invoice_items` table with the following fields:
+
+| Field | Description |
+|---|---|
+| `line_number` | Sequential line number (starts at 1) |
+| `description` | Line item description (the `concept` argument) |
+| `quantity` | Quantity (defaults to 1 for single-concept invoices) |
+| `unit_price` | Unit price in COP |
+| `discount_amount` | Line-level discount in COP |
+| `tax_amount` | Tax in COP |
+| `line_total` | `(quantity × unit_price) − discount_amount + tax_amount` |
+
+## KPI integration
+
+`totalInvoiced` and `totalPayments` are computed via the `calculate_kpi` PostgreSQL RPC:
+
+```sql
+-- Called for each KPI code each time the command center loads:
+SELECT calculate_kpi(
+  p_tenant_id  := '<tenant-uuid>',
+  p_kpi_code   := 'TOTAL_INVOICED',   -- or 'TOTAL_PAYMENTS'
+  p_period     := '2026-06'
+);
+```
+
+Results are stored in the `kpi_history` table per tenant/period and fetched back via a join on `kpi_definitions`. These values populate `DashboardCommandCenterData.kpis.totalInvoiced` and `.totalPayments`, and drive the **Facturación Emitida** and **Recaudo Cartera** KPI cards in the admin/director dashboard view.
+
+The `billing` health score is computed in JavaScript as:
+
+```
+billingScore = Math.round((totalPaid / totalBillingAmount) * 100)
+```
+
+where `totalPaid` and `totalBillingAmount` exclude `ANULADA` invoices.
+
+<Tip>
+`ANULADA` invoices are excluded from all collection-rate and outstanding-balance calculations across the ERP. Always void (`ANULADA`) rather than deleting an invoice to preserve the full audit trail and maintain accurate `kpi_history` records.
+</Tip>

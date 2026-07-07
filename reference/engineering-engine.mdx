@@ -1,0 +1,127 @@
+---
+title: "Engineering Engine: ASHRAE-based CFM and Pre-engineering Calculations"
+sidebarTitle: "Engineering Engine"
+description: "Reference for the engineering engine — pure functions that calculate airflow (CFM), air density, static pressure, equipment count, and power requirements using ASHRAE standards."
+---
+
+The engineering engine (`src/utils/engineering.ts`) is a pure-function module with no side effects. It implements ASHRAE-based calculations for industrial ventilation pre-engineering: volume, CFM, air density, static pressure, equipment sizing, noise estimation, and investment range.
+
+All functions are framework-agnostic TypeScript — they can be used in Next.js Server Actions, Node.js scripts, or tests without any runtime dependencies.
+
+## ACH by Environment
+
+Air Changes per Hour (ACH) values are defined in the `ACH_BY_ENVIRONMENT` constant and follow ASHRAE standards for industrial environments.
+
+| Environment Key | ACH (Air Changes/Hour) | Use Case |
+|----------------|----------------------|----------|
+| `heavy_plant` | 45 | Heavy manufacturing / foundry |
+| `fundicion` | 45 | Casting/smelting |
+| `mecanico` | 20 | Machine shop |
+| `alimentos` | 15 | Food processing |
+| `data_center` | 30 | Data center |
+| `warehouse` | 8 | Warehouse / storage |
+| `default` | 10 | General industrial |
+
+## Exported Functions
+
+### `calculateRequiredCfm(dimensions, environment)`
+
+```typescript
+calculateRequiredCfm(
+  dimensions: AreaDimensions,
+  environment: string
+): { cubicMeters: number; cubicFeet: number; ach: number; cfm: number }
+```
+
+Simplified wrapper for wizard compatibility. Uses altitude=0 (sea level), temp=20°C, no ducts. For more precise calculations, use [`generateEngineeringReport`](#generateengineeringreportdimensions-environment-altitudemsnm-tempcelsius-hasducts) directly.
+
+---
+
+### `generateEngineeringReport(dimensions, environment, altitudeMsnm, tempCelsius, hasDucts)`
+
+```typescript
+generateEngineeringReport(
+  dimensions: AreaDimensions,
+  environment: string,
+  altitudeMsnm: number,
+  tempCelsius: number,
+  hasDucts: boolean
+): DetailedEngineeringReport
+```
+
+Full pre-engineering report. Computes all physical properties of the ventilation system including airflow, power, noise, equipment count, distribution layout, and investment range.
+
+**`DetailedEngineeringReport` interface:**
+
+```typescript
+interface DetailedEngineeringReport {
+  cubicMeters: number;
+  cubicFeet: number;
+  ach: number;
+  cfm: number;
+  airDensity: number;          // kg/m³, corrected for altitude and temperature
+  staticPressure: number;      // inWG: 0.5 (no ducts) or 1.5 (with ducts)
+  powerHp: number;             // HP = (CFM × SP) / 6356
+  powerKw: number;             // kW = HP × 0.746 / 0.94 (IE4 efficiency)
+  noiseDba: number;            // base 68 dBA + 10×log10(eqCount)
+  eqCount: number;             // ceil(CFM / 7500)
+  distribution: string;        // e.g. "2 Inyectores + 2 Extractores tipo Hongo"
+  investmentRangeMinCop: number;
+  investmentRangeMaxCop: number;
+  investmentRangeMinUsd: number;
+  investmentRangeMaxUsd: number;
+  airVelocityFpm: number;      // CFM / outlet area (sq ft)
+  criticality: "ALTA" | "MEDIA" | "BAJA";
+}
+```
+
+---
+
+### `calculateAirDensity(altitudeMsnm, tempCelsius)`
+
+```typescript
+calculateAirDensity(altitudeMsnm: number, tempCelsius: number): number
+```
+
+Returns air density in kg/m³ using the standard atmospheric correction formula. Standard sea-level density is 1.204 kg/m³ at 20°C. Both altitude and temperature corrections are applied:
+
+- **Temperature correction:** `293.15 / (tempCelsius + 273.15)`
+- **Altitude correction:** `(1 − 2.2557×10⁻⁵ × altitudeMsnm)^5.25588`
+
+---
+
+### `getAchForEnvironment(environment)`
+
+```typescript
+getAchForEnvironment(environment: string): number
+```
+
+Returns the ACH value for the given environment key from `ACH_BY_ENVIRONMENT`. Defaults to `10` for unknown or unrecognised environment strings.
+
+## Input Validation
+
+The engine enforces realistic physical bounds on all dimension inputs before performing any calculation:
+
+- `length` and `width` are clamped to a maximum of **500 m**.
+- `height` is clamped to a maximum of **50 m**.
+- Negative or zero values are replaced with a **0.1 m minimum**.
+- If the resulting `cubicFeet` is zero, `cfm` is returned as `0` to avoid division by zero downstream.
+
+## Usage Example
+
+```typescript
+import { generateEngineeringReport } from "@/utils/engineering";
+
+const report = generateEngineeringReport(
+  { length: 50, width: 30, height: 8 },
+  "heavy_plant",
+  1600,  // Bogotá altitude (masl)
+  18,    // temperature °C
+  true   // has ducts
+);
+
+console.log(`Required CFM: ${report.cfm}`);
+console.log(`Equipment count: ${report.eqCount} units`);
+console.log(`Motor power: ${report.powerKw} kW`);
+console.log(`Estimated investment: ${report.investmentRangeMinCop.toLocaleString()} COP`);
+```

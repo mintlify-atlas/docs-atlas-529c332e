@@ -1,0 +1,131 @@
+---
+title: "User Management and RBAC: Inviting Users and Assigning Roles"
+sidebarTitle: "Users & Roles"
+description: "How to create users, assign roles, and manage permissions in ERP B2B Premium using the built-in RBAC system backed by Supabase Auth."
+---
+
+User management in ERP B2B Premium is handled through the `users` and `user_roles` tables backed by Supabase Auth. Administrators can create users, assign one or more roles, update profile data, and revoke roles — all through Server Actions that enforce `users.*` permissions.
+
+## Available Server Actions
+
+All user management actions live in `src/erp/actions/users.ts` and are marked `"use server"`. Permission checks are enforced server-side via `requireAction()` before any database operation is performed.
+
+| Action | Permission Required | Description |
+|--------|---------------------|-------------|
+| `listUsers(tenantCode)` | — | List all users with their assigned roles |
+| `listRoles(tenantCode)` | — | List all active roles in the tenant |
+| `createUser(tenantCode, data)` | `users.create` | Create auth user + DB row + optional role assignment |
+| `updateUser(tenantCode, userId, data)` | `users.edit` | Update `firstName`, `lastName`, `phone` |
+| `assignRole(tenantCode, userId, roleId)` | `users.permissions` | Assign a role (idempotent) |
+| `removeRole(tenantCode, userId, roleId)` | `users.permissions` | Revoke a role assignment |
+
+## UserListItem Interface
+
+Both `listUsers` and role-assignment operations operate on the following shape:
+
+```typescript
+interface UserListItem {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  roleIds: string[];
+  roleCodes: string[];
+}
+```
+
+`roleIds` and `roleCodes` are parallel arrays — index `0` in both refers to the same assignment. A user with no roles returns empty arrays.
+
+## Creating a User
+
+```typescript
+createUser(tenantCode: string | null, data: {
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone?: string;
+  roleId: string | null;
+}): Promise<{ success: boolean; error?: string; userId?: string }>
+```
+
+`createUser` executes a three-step transactional flow with partial rollback:
+
+1. **Creates the Supabase Auth user** via `auth.admin.createUser` with `email_confirm: true`. The user receives a confirmed email address and can sign in immediately once a password is set.
+2. **Inserts a row in the `users` table** with an `auth_user_id` foreign key linking back to the Supabase Auth identity.
+3. **Assigns the initial role** — if `roleId` is provided, inserts a row into `user_roles`. This step is optional; a user can be created without a role and have roles assigned later.
+
+**Rollback behavior:** if the `users` insert fails after the Auth user has already been created, the Auth user is deleted via `auth.admin.deleteUser` to prevent orphaned auth accounts.
+
+```typescript
+const result = await createUser("acme", {
+  email: "jane@acme.com",
+  firstName: "Jane",
+  lastName: "Doe",
+  phone: "+1-555-0100",
+  roleId: "role-uuid-here", // or null
+});
+
+if (!result.success) {
+  console.error(result.error);
+}
+// result.userId contains the new DB user id on success
+```
+
+## Updating a User
+
+Only `firstName`, `lastName`, and `phone` are editable via `updateUser`. Email and auth credentials are managed directly in Supabase Auth.
+
+```typescript
+await updateUser("acme", userId, {
+  firstName: "Jane",
+  lastName: "Smith",
+  phone: "+1-555-0199",
+});
+```
+
+Pass only the fields you want to change — the action only updates keys present in the `data` object.
+
+## Assigning and Removing Roles
+
+```typescript
+// Assign a role (safe to call even if already assigned — idempotent)
+await assignRole("acme", userId, roleId);
+
+// Revoke a role
+await removeRole("acme", userId, roleId);
+```
+
+`assignRole` silently succeeds on duplicate key violations (`error.code === "23505"`), making it safe to call in idempotent scenarios such as re-provisioning scripts.
+
+## Available Role Codes
+
+The following `role_code` values are defined in the RBAC matrix and resolved by the dashboard category mapper in `src/erp/actions/kpis.ts`:
+
+| Role Code | Dashboard Category |
+|-----------|-------------------|
+| `SUPER_ADMIN` | admin |
+| `ADMIN_EMPRESA` | admin |
+| `ADMIN_DEV` | admin |
+| `GERENTE_GENERAL` | director |
+| `DIRECTOR_FINANCIERO` | director |
+| `JEFE_FINANZAS` | director |
+| `AUXILIAR_FINANZAS` | director |
+| `DIRECTOR_COMERCIAL` | comercial |
+| `EJECUTIVO_COMERCIAL` | comercial |
+| `INGENIERO_COMERCIAL` | comercial |
+| `DIRECTOR_OPERACIONES` | operaciones |
+| `JEFE_PROYECTOS` | operaciones |
+| `TECNICO_CAMPO` | tecnico |
+| `JEFE_MANTENIMIENTO` | tecnico |
+| `ALMACENISTA` | almacenista |
+| `JEFE_INVENTARIO` | almacenista |
+| `AUDITOR` | auditor |
+
+<Note>
+Users can hold multiple roles simultaneously. A user assigned `ADMIN_EMPRESA` receives the `admin` dashboard view, which is the most comprehensive across all modules. Roles are **additive** — there is no role negation or deny list. If a user has any role that grants a permission, that permission applies regardless of other role assignments.
+</Note>
+
+<Warning>
+The `deleteUser` and `banUser` operations are **intentionally not exposed** as Server Actions. The RBAC matrix does not define these operations for any role. To revoke a user's access, call `removeRole` for each of their assigned roles. A user with zero role assignments cannot access any tenant-protected route.
+</Warning>

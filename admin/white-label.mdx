@@ -1,0 +1,69 @@
+---
+title: "White-label Branding: Per-tenant Theming and Identity"
+sidebarTitle: "White-label"
+description: "Configure per-tenant white-label branding in ERP B2B Premium — logos, color palette, site title, and favicon — all served dynamically without code changes."
+---
+
+ERP B2B Premium supports complete white-label branding per tenant. Each tenant's public site displays their own logo, primary color, favicon, and company name — loaded dynamically from `tenant_settings` at request time. No redeployment is required to change branding.
+
+## How Branding Is Applied
+
+The public layout calls `getPublicTenantSettings(tenantCode)` server-side during rendering. Because this action requires no authentication, it runs safely inside Next.js `generateMetadata` and root layout Server Components. The returned branding object is passed to the layout as CSS variables and page metadata.
+
+When a tenant has not yet configured branding settings, `getBrandingDefaults(tenantCode)` in `src/platform/branding/branding-defaults.ts` supplies hardcoded fallback values for known tenant codes. This prevents blank pages and broken layouts during initial tenant provisioning.
+
+The full branding write path (used by the admin UI) goes through `saveTenantBranding` in `src/web/actions/branding.ts`, which:
+
+1. Upserts all changed keys into `tenant_settings` with `is_public: true`
+2. Takes a full branding snapshot and stores it as a new row in `tenant_branding_version`
+
+This gives every tenant a complete version history that can be rolled back via `restoreBrandingVersion`.
+
+## Branding Configuration Checklist
+
+<Steps>
+  <Step title="Set the commercial name">
+    Insert or update `nombre_comercial` in `tenant_settings` with `module: "branding"`. This is the display name shown in the navigation header and page titles.
+  </Step>
+  <Step title="Upload and set logos">
+    Upload your logo assets to Supabase Storage (bucket `tenant-logos`) using `uploadBrandingLogo` or manually via the Supabase dashboard. Then set `logo_url` (light background) and `logo_secondary_url` (dark background) to the resulting public storage URLs.
+  </Step>
+  <Step title="Upload and set the favicon">
+    Upload a `.ico`, `.png`, or `.svg` file and set the `favicon_url` key. This appears in the browser tab and bookmarks.
+  </Step>
+  <Step title="Set brand colors">
+    Set `primary_color` and `secondary_color` as hex values (e.g. `#1A2B3C`). These are injected as CSS custom properties and control buttons, highlights, and accent elements across the UI.
+  </Step>
+  <Step title="Set browser metadata">
+    Set `titulo_navegador` for the `<title>` tag and `descripcion_sitio` for the `<meta name="description">` tag. Both are used by Next.js `generateMetadata` at request time.
+  </Step>
+  <Step title="Mark rows as public">
+    Ensure all branding rows have `is_public = true` so the `tenant_settings_read_anon` RLS policy allows unauthenticated reads. When using `saveTenantBranding`, this flag is set automatically. When using `updateTenantSettings` directly, you must set it explicitly in the database or by adding a follow-up update.
+  </Step>
+</Steps>
+
+## Branding Keys Reference
+
+| Key | Module | Description | Example |
+|-----|--------|-------------|---------|
+| `nombre_comercial` | branding | Display name shown in the UI | `"Acerías del Caribe"` |
+| `razon_social` | branding | Legal name used on documents and invoices | `"Acerías del Caribe S.A."` |
+| `logo_url` | branding | Primary logo for light backgrounds | Supabase Storage public URL |
+| `logo_secondary_url` | branding | Secondary logo for dark backgrounds | Supabase Storage public URL |
+| `favicon_url` | branding | Browser tab favicon | Supabase Storage public URL |
+| `primary_color` | branding | Primary brand color | `#1A2B3C` |
+| `secondary_color` | branding | Accent / secondary brand color | `#F59E0B` |
+| `titulo_navegador` | branding | Browser `<title>` tag content | `"Acerías B2B Portal"` |
+| `descripcion_sitio` | branding | Page `<meta name="description">` content | `"Portal industrial..."` |
+
+## Branding Version History
+
+Every call to `saveTenantBranding` automatically snapshots the full active branding config into the `tenant_branding_version` table. You can retrieve the version list with `getBrandingHistory(tenantCode)` and roll back any version with `restoreBrandingVersion(tenantCode, versionId)`. A rollback itself creates a new version entry describing the restoration, preserving a complete audit trail.
+
+## Fallback Behavior
+
+If a tenant has no rows in `tenant_settings` for branding keys, `getBrandingDefaults(tenantCode)` returns hardcoded defaults for known tenant codes defined in `src/platform/branding/branding-defaults.ts`. This ensures the layout renders correctly before a tenant has completed their branding setup. Once real settings are saved, they take precedence over the defaults on every subsequent request.
+
+<Tip>
+After updating branding via `updateTenantSettings` or directly in the database, clear the Next.js data cache by redeploying or by calling `revalidateTag('branding-<tenantCode>')` if you have instrumented the branding fetcher with `unstable_cache`. Without cache invalidation, the old branding may continue to be served until the cache entry expires.
+</Tip>

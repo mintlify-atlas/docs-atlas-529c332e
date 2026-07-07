@@ -1,0 +1,143 @@
+---
+title: "Quotes and Requirements: Pre-sales Pipeline Management"
+sidebarTitle: "Quotes & Requirements"
+description: "Create and manage technical requirements and commercial quotes in ERP B2B Premium, tracking them from draft through approval."
+---
+
+Requirements capture the technical scope of client needs. Quotes translate requirements into commercial proposals. Together they form the pre-sales pipeline between lead capture and job execution. Linking a quote to a requirement via `requirement_id` establishes full traceability: lead → requirement → quote → job → invoice.
+
+## Requirements
+
+### Lifecycle
+
+```
+BORRADOR → NUEVO → EN_REVISION → DIAGNOSTICO → COTIZACION → COMPLETADO | CANCELADO
+```
+
+Requirements start in `BORRADOR` when created by the API and progress through review and diagnostic stages before being linked to a quote (`COTIZACION`) and ultimately marked `COMPLETADO` or `CANCELADO`.
+
+### `RequirementRow` interface
+
+```typescript
+interface RequirementRow {
+  id: string;
+  requirement_code: string;
+  title: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH";
+  status: "BORRADOR" | "NUEVO" | "EN_REVISION" | "DIAGNOSTICO" | "COTIZACION" | "COMPLETADO" | "CANCELADO";
+  client_id: string;
+  engineering_user_id: string | null;
+  sales_user_id: string | null;
+  created_at: string;
+  client: { legal_name: string; city: string | null } | null;
+}
+```
+
+### `getRequirements(tenantCode?)` → `RequirementRow[]`
+
+Returns all requirements for the tenant ordered by `created_at` descending, with the related `client` record joined.
+
+### `createRequirement(tenantCode, reqData)`
+
+Requires the `requirements` action permission. New requirements are always created in `BORRADOR` status.
+
+```typescript
+createRequirement(tenantCode: string | null, reqData: {
+  title: string;
+  clientId: string;
+  category: string;
+  priority: string;
+})
+```
+
+The `created_by` field is resolved to the tenant owner user via `resolveTenantOwnerUserId`.
+
+### `updateRequirementStatus(reqId, newStatus, extra?)`
+
+Updates the `status` column on a requirement. The optional `extra` argument accepts any additional columns to patch in the same operation — for example, assigning an engineer:
+
+```typescript
+updateRequirementStatus(
+  reqId: string,
+  newStatus: string,
+  extra?: Record<string, any>   // e.g. { engineering_user_id: "uuid-..." }
+)
+```
+
+---
+
+## Quotes
+
+### Lifecycle
+
+```
+BORRADOR → EN_REVISION → ENVIADA → APROBADA | RECHAZADA | VENCIDA
+```
+
+Quotes are created in `BORRADOR`, reviewed internally (`EN_REVISION`), sent to the client (`ENVIADA`), then resolved as `APROBADA`, `RECHAZADA`, or `VENCIDA` (expired past `valid_until`).
+
+### `QuoteRow` interface
+
+```typescript
+interface QuoteRow {
+  id: string;
+  quote_code: string;
+  client_id: string;
+  requirement_id: string | null;
+  assigned_user_id: string | null;
+  valid_until: string;
+  subtotal: number;
+  total_amount: number;
+  status: "BORRADOR" | "EN_REVISION" | "ENVIADA" | "APROBADA" | "RECHAZADA" | "VENCIDA";
+  created_at: string;
+  client: { legal_name: string } | null;
+}
+```
+
+### `getQuotes(tenantCode?)` → `QuoteRow[]`
+
+Returns all non-deleted quotes for the tenant ordered by `created_at` descending, with the client's `legal_name` joined.
+
+### `createQuote(tenantCode, quoteData)`
+
+Requires the `quotes.create` action permission. The quote is created in `BORRADOR` status.
+
+```typescript
+createQuote(tenantCode: string | null, quoteData: {
+  clientId: string;
+  requirementId?: string;   // optional — links to an existing requirement
+  validUntil: string;       // ISO date string, e.g. "2026-07-31"
+})
+```
+
+### `addQuoteItem(tenantCode, itemData)`
+
+Appends a line item to an existing quote. Each item carries its own quantity, unit price, discount, and tax percentage. The `item_order` field controls the display sequence on the quote PDF.
+
+```typescript
+addQuoteItem(tenantCode: string | null, itemData: {
+  quoteId: string;
+  description: string;
+  itemType: string;
+  quantity: number;
+  unitPrice: number;
+  discountAmount: number;
+  taxPercent: number;
+  itemOrder: number;
+})
+```
+
+The action inserts into the `quote_items` table with `unit` defaulted to `"UNIDAD"`.
+
+### `updateQuoteStatus(quoteId, status)`
+
+Transitions a quote to any valid status string. No permission guard is applied at the action level — access control is enforced upstream by the calling Server Component or route handler.
+
+```typescript
+updateQuoteStatus(quoteId: string, status: string): Promise<QuoteRow>
+```
+
+<Tip>
+Link a quote to a requirement via `requirement_id` to maintain full traceability from lead → requirement → quote → job → invoice. This chain is surfaced in the admin command center and enables end-to-end revenue attribution per client engagement.
+</Tip>

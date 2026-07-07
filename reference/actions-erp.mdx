@@ -1,0 +1,609 @@
+---
+title: "ERP Module Server Actions: Leads, Quotes, Requirements, Dashboard"
+sidebarTitle: "ERP Actions"
+description: "API reference for ERP-specific Server Actions — lead management, quotes, requirements, role-adaptive KPIs, and the command center dashboard."
+---
+
+ERP module Server Actions live in `src/erp/actions/`. All require an authenticated session. They use `supabaseAdmin` (service role) but enforce tenant isolation and RBAC at the application layer before every query.
+
+---
+
+## Leads
+
+`src/erp/actions/leads-erp.ts`
+
+### getLeads
+
+```typescript
+getLeads(tenantCode?: string | null): Promise<LeadRow[]>
+```
+
+Fetches up to 200 non-deleted leads for the tenant, ordered by creation date (newest first). Each lead is returned with its joined relationships: **client** (`clients`), **contact** (`client_contacts`), and **diagnostic** (`diagnostic_reports`). Supabase array-form 1:many FK relationships are normalized to single objects.
+
+<ParamField path="tenantCode" type="string | null" optional>
+  Tenant subdomain code. Resolved to UUID via `getTenantId`.
+</ParamField>
+
+**Returns** `Promise<LeadRow[]>`:
+
+```typescript
+interface LeadRow {
+  id: string;
+  lead_code: string;
+  risk_level: "CALIENTE" | "TIBIO" | "FRIO" | "SPAM";
+  score: number;
+  status: string;
+  lead_source: string | null;
+  notes: string | null;
+  created_at: string;
+  assigned_user_id: string | null;
+  client: {
+    legal_name: string;
+    city: string | null;
+  } | null;
+  contact: {
+    first_name: string;
+    last_name: string;
+    email: string | null;
+    phone: string | null;
+  } | null;
+  diagnostic: {
+    id: string;
+    diagnostic_code: string;
+    service_type: string;
+    calculated_cfm: number | null;
+    cfm_category: string;
+    estimated_price_min_cop: number;
+    estimated_price_max_cop: number;
+    materials_recommendation: string | null;
+    dimensions: { length: number; width: number; height: number } | null;
+    calculated_volume: number | null;
+  } | null;
+}
+```
+
+---
+
+### updateLeadStatus
+
+```typescript
+updateLeadStatus(
+  leadId: string,
+  newStatus: "NUEVO" | "EN_SEGUIMIENTO" | "CALIFICADO" | "RECHAZADO" | "CONVERTIDO"
+): Promise<void>
+```
+
+Updates the lifecycle status of a lead. Requires the `leads` RBAC action permission.
+
+<ParamField path="leadId" type="string" required>
+  UUID of the lead to update.
+</ParamField>
+
+<ParamField path="newStatus" type='"NUEVO" | "EN_SEGUIMIENTO" | "CALIFICADO" | "RECHAZADO" | "CONVERTIDO"' required>
+  Target status. Also updates `updated_at` to the current timestamp.
+</ParamField>
+
+**Returns** `Promise<void>`. Throws on Supabase error.
+
+**Required permission:** `leads`
+
+---
+
+## Quotes
+
+`src/erp/actions/quotes.ts`
+
+### getQuotes
+
+```typescript
+getQuotes(tenantCode?: string | null): Promise<QuoteRow[]>
+```
+
+Returns all quotes for the tenant ordered by creation date (newest first), with the joined client `legal_name`.
+
+```typescript
+interface QuoteRow {
+  id: string;
+  quote_code: string;
+  client_id: string;
+  requirement_id: string | null;
+  assigned_user_id: string | null;
+  valid_until: string;
+  subtotal: number;
+  total_amount: number;
+  status: "BORRADOR" | "EN_REVISION" | "ENVIADA" | "APROBADA" | "RECHAZADA" | "VENCIDA";
+  created_at: string;
+  client: { legal_name: string } | null;
+}
+```
+
+Returns an empty array `[]` on Supabase error rather than throwing.
+
+---
+
+### createQuote
+
+```typescript
+createQuote(
+  tenantCode: string | null,
+  quoteData: {
+    clientId: string;
+    requirementId?: string;
+    validUntil: string;
+  }
+): Promise<Quote>
+```
+
+Creates a new quote in `BORRADOR` status. The `assigned_user_id` is automatically set to the tenant owner.
+
+<ParamField path="quoteData.clientId" type="string" required>
+  UUID of the client this quote is for.
+</ParamField>
+
+<ParamField path="quoteData.requirementId" type="string" optional>
+  UUID of the associated requirement, if any.
+</ParamField>
+
+<ParamField path="quoteData.validUntil" type="string" required>
+  Expiry date in `YYYY-MM-DD` format.
+</ParamField>
+
+**Required permission:** `quotes.create`
+
+---
+
+### getQuoteItems
+
+```typescript
+getQuoteItems(quoteId: string): Promise<QuoteItem[]>
+```
+
+Returns all line items for a quote, ordered by `item_order` ascending. Returns an empty array on error.
+
+<ParamField path="quoteId" type="string" required>
+  UUID of the quote.
+</ParamField>
+
+---
+
+### addQuoteItem
+
+```typescript
+addQuoteItem(
+  tenantCode: string | null,
+  itemData: {
+    quoteId: string;
+    description: string;
+    itemType: string;
+    quantity: number;
+    unitPrice: number;
+    discountAmount: number;
+    taxPercent: number;
+    itemOrder: number;
+  }
+): Promise<QuoteItem>
+```
+
+Appends a line item to an existing quote. The `unit` field is hardcoded to `"UNIDAD"`.
+
+<ParamField path="itemData.quoteId" type="string" required>
+  UUID of the parent quote.
+</ParamField>
+
+<ParamField path="itemData.description" type="string" required>
+  Line item description.
+</ParamField>
+
+<ParamField path="itemData.itemType" type="string" required>
+  Classification (e.g. `"Producto"`, `"Servicio"`).
+</ParamField>
+
+<ParamField path="itemData.quantity" type="number" required>
+  Quantity of units.
+</ParamField>
+
+<ParamField path="itemData.unitPrice" type="number" required>
+  Price per unit in COP.
+</ParamField>
+
+<ParamField path="itemData.discountAmount" type="number" required>
+  Discount amount in COP for this line.
+</ParamField>
+
+<ParamField path="itemData.taxPercent" type="number" required>
+  Tax percentage (e.g. `19` for 19% IVA).
+</ParamField>
+
+<ParamField path="itemData.itemOrder" type="number" required>
+  Display order of the line item within the quote.
+</ParamField>
+
+---
+
+### updateQuoteStatus
+
+```typescript
+updateQuoteStatus(quoteId: string, status: string): Promise<Quote>
+```
+
+Updates the status of a quote to any valid lifecycle value.
+
+<ParamField path="quoteId" type="string" required>
+  UUID of the quote.
+</ParamField>
+
+<ParamField path="status" type="string" required>
+  Target status string (e.g. `"ENVIADA"`, `"APROBADA"`, `"RECHAZADA"`).
+</ParamField>
+
+---
+
+## Requirements
+
+`src/erp/actions/requirements.ts`
+
+### getRequirements
+
+```typescript
+getRequirements(tenantCode?: string | null): Promise<RequirementRow[]>
+```
+
+Returns all requirements for the tenant ordered by creation date (newest first), with the joined client's `legal_name` and `city`.
+
+```typescript
+interface RequirementRow {
+  id: string;
+  requirement_code: string;
+  title: string;
+  category: string;
+  priority: "LOW" | "MEDIUM" | "HIGH";
+  status:
+    | "BORRADOR"
+    | "NUEVO"
+    | "EN_REVISION"
+    | "DIAGNOSTICO"
+    | "COTIZACION"
+    | "COMPLETADO"
+    | "CANCELADO";
+  client_id: string;
+  engineering_user_id: string | null;
+  sales_user_id: string | null;
+  created_at: string;
+  client: { legal_name: string; city: string | null } | null;
+  engineering_user: { first_name: string; last_name: string } | null;
+}
+```
+
+Returns an empty array `[]` on Supabase error rather than throwing.
+
+---
+
+### createRequirement
+
+```typescript
+createRequirement(
+  tenantCode: string | null,
+  reqData: {
+    title: string;
+    clientId: string;
+    category: string;
+    priority: string;
+  }
+): Promise<Requirement>
+```
+
+Creates a new requirement with status `"BORRADOR"`. The `created_by` is set to the tenant owner's user ID.
+
+<ParamField path="reqData.title" type="string" required>
+  Requirement title / short description.
+</ParamField>
+
+<ParamField path="reqData.clientId" type="string" required>
+  UUID of the client this requirement is associated with.
+</ParamField>
+
+<ParamField path="reqData.category" type="string" required>
+  Requirement category (free text, e.g. `"Mantenimiento"`, `"Instalación"`).
+</ParamField>
+
+<ParamField path="reqData.priority" type="string" required>
+  Priority level: `"LOW"`, `"MEDIUM"`, or `"HIGH"`.
+</ParamField>
+
+**Required permission:** `requirements`
+
+---
+
+### updateRequirementStatus
+
+```typescript
+updateRequirementStatus(
+  reqId: string,
+  newStatus: string,
+  extra?: Record<string, any>
+): Promise<Requirement>
+```
+
+Updates a requirement's status and optionally merges additional column values in a single `UPDATE`.
+
+<ParamField path="reqId" type="string" required>
+  UUID of the requirement to update.
+</ParamField>
+
+<ParamField path="newStatus" type="string" required>
+  Target lifecycle status (e.g. `"EN_REVISION"`, `"COTIZACION"`, `"COMPLETADO"`).
+</ParamField>
+
+<ParamField path="extra" type="Record<string, any>" optional>
+  Additional column/value pairs to merge into the update payload (e.g. `{ engineering_user_id: "uuid" }`).
+</ParamField>
+
+**Returns** `Promise<Requirement>` — the updated row.
+
+---
+
+## Dashboard
+
+`src/erp/actions/dashboard.ts`
+
+### getDashboardCommandCenter
+
+```typescript
+getDashboardCommandCenter(tenantCode: string | null): Promise<DashboardCommandCenterData>
+```
+
+Builds the full Command Center payload for the executive dashboard. Uses `Promise.all` to fire **7 concurrent** Supabase queries to minimize latency:
+
+| Query # | Table | Purpose |
+|---|---|---|
+| 1 | `tenants` | Fetch tenant display name |
+| 2 | `invoices` | Outstanding balance, sparkline, collection rate |
+| 3 | `business_events` | Recent pulse feed (last 10, excludes KPI events) |
+| 4 | `audit_log` | Security audit trail (last 20, excludes KPI events) |
+| 5 | `leads` | CRM health score and new leads count |
+| 6 | `inventory_stock` | Inventory health score (items ≤ 10 available trigger alerts) |
+| 7 | `requirements` | Purchases health score (BORRADOR/NUEVO count) |
+
+After the parallel batch, three additional **sequential** queries populate the task queue:
+
+- High-priority requirements in `BORRADOR`, `NUEVO`, or `EN_REVISION` status (up to 2).
+- High-priority jobs in `PENDIENTE` or `EN_EJECUCION` status (up to 2).
+- Leads with status `NUEVO` (up to 2).
+
+KPIs (`TOTAL_INVOICED`, `TOTAL_PAYMENTS`, `LEAD_SLA_BREACH_RATE`) are computed server-side via the `calculate_kpi` Supabase RPC and read from `kpi_history`. If the RPC fails, JS-side aggregation is used as a fallback.
+
+Audit log entries are enriched with user full names via a manual `users` join.
+
+**Returns** `Promise<DashboardCommandCenterData>`:
+
+```typescript
+interface DashboardCommandCenterData {
+  tenantName: string;
+  outstanding: number;           // Total unpaid balance (COP)
+  invoiceCount: number;          // Count of pending invoices
+  hasOverdue: boolean;           // Any invoices with status VENCIDA
+  hasDueSoon: boolean;           // Fallback: true when invoiceCount > 0 and no overdue
+  delta: number;                 // MoM change ratio (e.g. 0.124 = +12.4%)
+  sparkline: number[];           // 30-point sparkline array derived from outstanding
+  kpis: {
+    totalInvoiced: number;       // Total invoiced for current month period
+    totalPayments: number;       // Total payments received for current month
+    leadSlaBreachRate: number;   // Lead SLA breach rate (0–100)
+  };
+  recentEvents: Array<{
+    id: string;
+    eventCode: string;
+    entityType: string;
+    entityId: string;
+    payload: any;
+    createdAt: string;
+  }>;
+  auditLog: Array<{
+    id: string;
+    eventCode: string;
+    entityType: string;
+    entityId: string | null;
+    action: string;
+    userId: string | null;
+    userName: string | null;    // Resolved from users table
+    createdAt: string;
+  }>;
+  operationsHealth: {
+    inventory:  { score: number; alerts: number };  // score = max(0, 100 - lowStockItems × 10)
+    purchases:  { score: number; alerts: number };  // score = max(0, 100 - pendingReqs × 8)
+    billing:    { score: number; alerts: number };  // score = collection rate %
+    crm:        { score: number; alerts: number };  // score = (converted / total leads) × 100
+  };
+  queueTasks: Array<{
+    id: string;
+    description: string;
+    value: string | null;
+    deadline: string;
+    isOverdue: boolean;
+    link: string;
+  }>;
+  userName: string;               // Currently hardcoded to "Administrador"
+}
+```
+
+---
+
+## KPIs
+
+`src/erp/actions/kpis.ts`
+
+### getKpisForRole
+
+```typescript
+getKpisForRole(tenantCode: string | null): Promise<RoleDashboardData>
+```
+
+Returns role-tailored KPIs, a pending task queue, and a notification feed for the authenticated user. All 7 data tables are fetched with a single `Promise.all` before branching into role-specific aggregation.
+
+**Role resolution — `resolveCategory(role)`**
+
+The authenticated user's role code is mapped to one of eight dashboard categories:
+
+| Category | Matched Role Codes |
+|---|---|
+| `admin` | `SUPER_ADMIN`, `ADMIN_EMPRESA`, `ADMIN_DEV` |
+| `director` | `GERENTE_GENERAL`, `DIRECTOR_FINANCIERO`, `JEFE_FINANZAS`, `AUXILIAR_FINANZAS` |
+| `comercial` | `DIRECTOR_COMERCIAL`, `EJECUTIVO_COMERCIAL`, `INGENIERO_COMERCIAL` |
+| `operaciones` | `DIRECTOR_OPERACIONES`, `JEFE_PROYECTOS` |
+| `tecnico` | `TECNICO_CAMPO`, `JEFE_MANTENIMIENTO` |
+| `almacenista` | `ALMACENISTA`, `JEFE_INVENTARIO` |
+| `auditor` | `AUDITOR` |
+| `default` | Any unmapped role |
+
+**Parallel queries fired:**
+
+| Table | Fields fetched |
+|---|---|
+| `invoices` | `id`, `invoice_code`, `total_amount`, `paid_amount`, `balance_amount`, `status`, `invoice_date`, `due_date`, `client_id` |
+| `leads` | `id`, `lead_code`, `status`, `risk_level`, `created_at`, `client_id`, `company_name` |
+| `jobs` | `id`, `job_code`, `title`, `description`, `status`, `priority`, `planned_end_date`, `assigned_user_id`, `created_at`, `client_id` |
+| `inventory_stock` | `id`, `available_quantity`, `reserved_quantity`, `item_id`, `warehouse_id`, `inventory_items(name, item_code)` |
+| `audit_log` | `id`, `event_code`, `entity_type`, `action`, `created_at`, `user_id` (last 7 days) |
+| `quotes` | `id`, `quote_code`, `status`, `total_amount` |
+| `requirements` | `id`, `requirement_code`, `title`, `priority`, `status`, `client_id` |
+
+**KPI composition per category:**
+
+| Category | KPI 1 | KPI 2 | KPI 3 | KPI 4 |
+|---|---|---|---|---|
+| `admin` / `director` | Facturación Emitida | Recaudo Cartera | Capacidad Activa (OTs) | Conversión Leads |
+| `comercial` | Leads Activos | Leads Calientes | Leads Nuevos (mes) | Tasa de Conversión |
+| `operaciones` | OTs Activas | OTs Vencidas | Vencen esta semana | OTs Completadas |
+| `tecnico` | OTs Activas | OTs Vencidas | Vencen Hoy | Prioridad Alta |
+| `almacenista` | Items Stock Bajo | Items en Stock | Unidades Reservadas | Items OK |
+| `auditor` | Eventos (7d) | Eventos Críticos (DELETE) | Eventos Hoy | Usuarios Únicos |
+| `default` | Sin rol asignado | Rol actual | Tenant (UUID prefix) | Acceso limitado |
+
+**Notification assembly:**
+
+Notifications are built from live DB data across all roles:
+- **Overdue invoices** → `isDanger: true`
+- **Low-stock items** (available ≤ 10) → `isDanger: true` when `available_quantity <= 0`
+- **Critical / overdue jobs** → `isDanger: true` when `planned_end_date < today` or `priority = HIGH`
+- **High-priority requirements** → `isDanger: true`
+- **Hot leads** (`risk_level = CALIENTE`) → `isDanger: false`
+
+**Returns** `Promise<RoleDashboardData>`:
+
+```typescript
+interface RoleDashboardData {
+  kpis: KpiValue[];
+  pending: PendingItem[];
+  queueTitle: string;
+  queueSubtitle: string;
+  notificationsTitle: string;
+  notificationsCount: number;
+  notifications?: NotificationItem[];
+}
+
+interface KpiValue {
+  id: string;
+  label: string;
+  value: string;
+  sub?: string;
+  trend?: "up" | "down" | "neutral";
+  variant?: "success" | "info" | "warning" | "danger" | "neutral";
+  link?: string;
+}
+
+interface PendingItem {
+  id: string;
+  description: string;
+  value?: string | null;
+  deadline: string;
+  isOverdue: boolean;
+  link: string;
+}
+
+interface NotificationItem {
+  id: string;
+  title: string;
+  description: string;
+  link: string;
+  isDanger: boolean;
+}
+```
+
+**Throws** `"No autenticado"` if no session is present; throws on tenant access violation.
+
+---
+
+## Users
+
+`src/erp/actions/users.ts`
+
+All user management actions are restricted to administrators. See the **Users & Roles** admin reference for complete documentation. Brief summaries:
+
+### listUsers
+
+```typescript
+listUsers(tenantCode: string | null): Promise<UserListItem[]>
+```
+
+Lists all users in the tenant with their assigned role IDs and role codes. Performs a manual join from `users` → `user_roles` → `roles`.
+
+### listRoles
+
+```typescript
+listRoles(tenantCode: string | null): Promise<RoleListItem[]>
+```
+
+Returns all active roles defined for the tenant, ordered alphabetically by name.
+
+### createUser
+
+```typescript
+createUser(
+  tenantCode: string | null,
+  data: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    phone?: string;
+    roleId: string | null;
+  }
+): Promise<{ success: boolean; error?: string; userId?: string }>
+```
+
+Creates a Supabase Auth user, inserts a `users` row, and optionally assigns a role — all in one atomic flow with Auth rollback on failure. **Required permission:** `users.create`
+
+### updateUser
+
+```typescript
+updateUser(
+  tenantCode: string | null,
+  userId: string,
+  data: { firstName?: string; lastName?: string; phone?: string }
+): Promise<{ success: boolean; error?: string }>
+```
+
+Updates mutable profile fields for a user. **Required permission:** `users.edit`
+
+### assignRole
+
+```typescript
+assignRole(
+  tenantCode: string | null,
+  userId: string,
+  roleId: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Inserts a `user_roles` row. Idempotent — duplicate constraint violations (`23505`) are treated as success. **Required permission:** `users.permissions`
+
+### removeRole
+
+```typescript
+removeRole(
+  tenantCode: string | null,
+  userId: string,
+  roleId: string
+): Promise<{ success: boolean; error?: string }>
+```
+
+Deletes the matching `user_roles` row scoped to the tenant. **Required permission:** `users.permissions`

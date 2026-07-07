@@ -1,47 +1,138 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with ERP B2B Premium Locally"
+sidebarTitle: "Quickstart"
+description: "Clone, configure, and run ERP B2B Premium on your local machine in under 10 minutes with Supabase and Node.js 20+."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through everything needed to run **both the public marketing site and the authenticated ERP dashboard** on your local machine. By the end you'll have a fully functional development environment with live Supabase connectivity, seeded test data, and hot-module replacement running at `http://localhost:3000`.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+**Prerequisites before you begin:**
 
-## Prerequisites
+- **Node.js 20.x or later** — 22.x LTS is recommended for best performance
+- **npm 10+** — ships with Node.js 22
+- **A Supabase project** — either a [local Supabase instance](https://supabase.com/docs/guides/self-hosting) (`npx supabase start`) or a free cloud project at [supabase.com](https://supabase.com)
+</Note>
 
-Before you begin, you must have:
+## Hardware Requirements
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+| Resource | Dev (Minimum) | Dev (Recommended) | Prod (Minimum) | Prod (Recommended) |
+|----------|--------------|-------------------|---------------|-------------------|
+| RAM | 8 GB | 16 GB | 2 GB | 4 GB |
+| CPU | 4 cores | 8 cores | 2 cores | 4 cores |
+| Storage | 10 GB free | 20 GB SSD | 20 GB SSD | 40 GB SSD |
+| Node.js | 20.x | 22.x | 20.x LTS | 22.x LTS |
+| OS | macOS / Linux / Windows (WSL2) | — | — | — |
 
-## Get started
+<Note>
+The primary performance bottleneck is **Supabase (Postgres + storage)**, not the Next.js frontend. For high-traffic workloads (>10k req/min), use Vercel Pro or horizontal scaling with containers.
+</Note>
+
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
-
+  <Step title="Clone the repository">
     ```bash
-    npm install your-package
+    git clone https://github.com/ency07/B2B.git
+    cd B2B
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Install dependencies">
+    ```bash
+    npm install
+    ```
+
+    All dependencies use **exact pinned versions** — no `^` ranges — ensuring every developer and CI run resolves identical packages. A full install takes roughly 60–90 seconds on a cold cache. Do not run `npm update` without first consulting `docs/15_frontend/DEPENDENCY_GUIDE.md`.
+
+    Key pinned versions installed:
+    - `next` **16.2.9** · `react` **19.2.4** · `typescript` **5.9.3**
+    - `@supabase/supabase-js` **2.108.2** · `zod` **4.4.3** · `vitest` **3.1.3**
+    - `tailwindcss` **4.3.1** · `framer-motion` **12.40.0** · `recharts` **3.8.1**
+  </Step>
+
+  <Step title="Configure your environment">
+    Copy the example file to create your local environment:
 
     ```bash
-    your-cli init
+    cp .env.example .env.local
+    ```
+
+    Then open `.env.local` and fill in the four required variables:
+
+    ```env
+    # ── Supabase public (exposed to browser via NEXT_PUBLIC_ prefix) ──────────
+    NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+
+    # ── Default tenant slug ───────────────────────────────────────────────────
+    NEXT_PUBLIC_DEFAULT_TENANT_CODE=acme
+
+    # ── Supabase server-only (never exposed to the browser) ──────────────────
+    SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+    ```
+
+    You can find `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` in your Supabase project dashboard under **Project Settings → API**.
+  </Step>
+
+  <Step title="Run database migrations">
+    Apply all SQL migrations to your Supabase project:
+
+    ```bash
+    npx ts-node scripts/deploy-migrations.ts
+    ```
+
+    This executes every file in `supabase/migrations/` in timestamp order. Make sure `.env.local` is pointing to the correct Supabase project before running. After the command completes, verify integrity:
+
+    ```bash
+    npx ts-node scripts/check-rls-coverage.ts
+    npx ts-node scripts/check-index-collisions.ts
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Seed test data (optional)">
+    Populate the database with two pre-configured tenants (`acme` and `apex`) plus test users for each role:
 
     ```bash
-    your-cli start
+    npm run seed:test
     ```
+
+    To remove all seeded data later:
+
+    ```bash
+    npm run seed:test:clean
+    ```
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    npm run dev
+    ```
+
+    The application starts at **[http://localhost:3000](http://localhost:3000)**:
+
+    - `/` — Public marketing landing page
+    - `/wizard` — Lead generation multi-step wizard
+    - `/portal` — Public tenant portal
+    - `/dashboard` — Authenticated ERP dashboard (requires login)
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Available npm Scripts
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+| Script | Command | Description |
+|--------|---------|-------------|
+| `dev` | `next dev` | Start dev server with standard HMR |
+| `dev:turbo` | `next dev --turbo` | Start dev server with **Turbopack** (faster HMR) |
+| `build` | `next build` | Production build |
+| `start` | `next start` | Serve the production build |
+| `test:unit` | `vitest run` | Run all unit tests once |
+| `test:watch` | `vitest` | Run tests in interactive watch mode |
+| `test:coverage` | `vitest run --coverage` | Run tests with V8 coverage report |
+| `lint` | `eslint` | Run ESLint across the codebase |
+| `audit:security` | `npm audit --audit-level=high` | Fail on high+ CVEs |
+| `deps:pin` | `node scripts/pin-versions.js` | Re-pin all versions from package-lock.json |
+
+<Tip>
+Use **`npm run dev:turbo`** during development for significantly faster Hot Module Replacement powered by [Turbopack](https://turbo.build/pack). Turbopack is production-ready in Next.js 16 and reduces cold-start and rebuild times substantially on large codebases like this one.
 </Tip>
